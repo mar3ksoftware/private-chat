@@ -1,0 +1,28 @@
+{
+  "name": "private-chat-backend",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts",
+    "test": "bun test",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@socket.io/bun-engine": "^0.1.1",
+    "pino": "^9.5.0",
+    "socket.io": "^4.8.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.0",
+    "@types/bun": "latest",
+    "pino-pretty": "^11.3.0",
+    "socket.io-client": "^4.8.3",
+    "typescript": "^5.7.0"
+  }
+}
