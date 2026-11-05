@@ -4,8 +4,8 @@ import type { Server as IoServer, Socket } from 'socket.io';
 import type { AccountStore } from './account-store';
 import type { GroupStore } from './group-store';
 import type { RateLimiterRegistry } from './rate-limiter';
-import type { ClientToServerEvents, ServerToClientEvents } from './types';
-import { EVENTS, GroupId, SocketId, UserId } from './types';
+import type { ClientToServerEvents, ServerToClientEvents, UserInfo } from './types';
+import { EVENTS, GroupId, SocketId } from './types';
 import type { UserRegistry } from './user-registry';
 import {
   validateE2eePublicKeyPayload,
@@ -14,11 +14,22 @@ import {
   validateLoginPayload,
   validateMessagePayload,
   validateRegisterPayload,
-  validateUsername,
+  validateUserJoinPayload,
 } from './validators';
 
 type TypedSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
 type TypedServer = IoServer<ClientToServerEvents, ServerToClientEvents>;
+
+function disconnectPreviousSocket(
+  io: TypedServer,
+  previous: UserInfo | undefined,
+  currentSocketId: SocketId,
+): void {
+  if (previous === undefined || previous.socketId === currentSocketId) {
+    return;
+  }
+  io.sockets.sockets.get(String(previous.socketId))?.disconnect(true);
+}
 
 export function createServer(
   io: TypedServer,
@@ -28,23 +39,49 @@ export function createServer(
   groupStore: GroupStore,
   logger: Logger,
 ): void {
+  const pendingRegistrations = new Set<string>();
+
+  // Registry entries survive a transport drop for the 30s reattach window, but
+  // they must not be advertised as online while their socket is gone.
+  const getConnectedUsers = (): readonly UserInfo[] =>
+    userRegistry
+      .getAllUsers()
+      .filter((user) => io.sockets.sockets.get(String(user.socketId))?.connected === true);
+
   io.on('connection', (socket: TypedSocket) => {
-    socket.on(EVENTS.CLIENT.USER_JOIN, (username: string) => {
-      const val = validateUsername(username);
-      if (!val.success) {
-        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, val.errors);
+    socket.on(EVENTS.CLIENT.USER_JOIN, (payload) => {
+      const rlResult = rateLimiters.check(socket.id);
+      if (!rlResult.allowed) {
+        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, { reason: 'Rate limit exceeded' });
         return;
       }
 
-      const userInfo = userRegistry.addUser(username, SocketId(socket.id));
-      if (userInfo === undefined) {
-        socket.emit(EVENTS.SERVER.ERROR, 'username taken');
+      const valResult = validateUserJoinPayload(payload);
+      if (!valResult.success) {
+        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, { reason: valResult.errors.join(', ') });
         return;
       }
+
+      const { username } = valResult.data;
+      if (pendingRegistrations.has(username) || accountStore.usernameExists(username)) {
+        socket.emit(EVENTS.SERVER.ERROR, { message: 'username taken' });
+        return;
+      }
+
+      const currentSocketId = SocketId(socket.id);
+      const previous = userRegistry.getUserByUsername(username);
+      const userInfo = userRegistry.addUser(username, currentSocketId);
+      if (userInfo === undefined) {
+        socket.emit(EVENTS.SERVER.ERROR, { message: 'username taken' });
+        return;
+      }
+
+      disconnectPreviousSocket(io, previous, currentSocketId);
 
       socket.join(String(userInfo.userId));
       io.emit(EVENTS.SERVER.USER_JOINED, userInfo);
-      socket.emit(EVENTS.SERVER.ACTIVE_USERS, userRegistry.getAllUsers());
+      socket.emit(EVENTS.SERVER.ACTIVE_USERS, getConnectedUsers());
+      socket.emit(EVENTS.SERVER.ACTIVE_GROUPS, groupStore.getGroupsForUser(userInfo.userId));
 
       logger.info({ userId: userInfo.userId, username: userInfo.username }, 'user joined');
     });
@@ -68,9 +105,25 @@ export function createServer(
         return;
       }
 
+      const username = valResult.data.username;
+      if (
+        pendingRegistrations.has(username) ||
+        userRegistry.getUserByUsername(username) !== undefined
+      ) {
+        socket.emit(EVENTS.SERVER.REGISTER_ERROR, {
+          kind: 'register_error',
+          reason: 'username_taken',
+        });
+        return;
+      }
+
+      pendingRegistrations.add(username);
       try {
+        const currentSocketId = SocketId(socket.id);
+        const previous = userRegistry.getUserByUsername(username);
+
         const result = await accountStore.createAccount(
-          valResult.data.username,
+          username,
           valResult.data.password,
           valResult.data.pin,
         );
@@ -83,7 +136,7 @@ export function createServer(
         const userInfo = userRegistry.registerSocket(
           result.userId,
           result.username,
-          SocketId(socket.id),
+          currentSocketId,
         );
         if (userInfo === undefined) {
           socket.emit(EVENTS.SERVER.REGISTER_ERROR, {
@@ -93,9 +146,12 @@ export function createServer(
           return;
         }
 
+        disconnectPreviousSocket(io, previous, currentSocketId);
+
         socket.join(String(result.userId));
         io.emit(EVENTS.SERVER.USER_JOINED, userInfo);
-        socket.emit(EVENTS.SERVER.ACTIVE_USERS, userRegistry.getAllUsers());
+        socket.emit(EVENTS.SERVER.ACTIVE_USERS, getConnectedUsers());
+        socket.emit(EVENTS.SERVER.ACTIVE_GROUPS, groupStore.getGroupsForUser(result.userId));
         socket.emit(EVENTS.SERVER.REGISTER_SUCCESS, result);
 
         logger.info({ userId: result.userId, username: result.username }, 'user registered');
@@ -104,6 +160,8 @@ export function createServer(
           kind: 'register_error',
           reason: 'internal_error',
         });
+      } finally {
+        pendingRegistrations.delete(username);
       }
     });
 
@@ -138,10 +196,13 @@ export function createServer(
           return;
         }
 
+        const currentSocketId = SocketId(socket.id);
+        const previous = userRegistry.getUserByUsername(result.username);
+
         const userInfo = userRegistry.registerSocket(
           result.userId,
           result.username,
-          SocketId(socket.id),
+          currentSocketId,
         );
         if (userInfo === undefined) {
           socket.emit(EVENTS.SERVER.LOGIN_ERROR, {
@@ -151,9 +212,12 @@ export function createServer(
           return;
         }
 
+        disconnectPreviousSocket(io, previous, currentSocketId);
+
         socket.join(String(result.userId));
         io.emit(EVENTS.SERVER.USER_JOINED, userInfo);
-        socket.emit(EVENTS.SERVER.ACTIVE_USERS, userRegistry.getAllUsers());
+        socket.emit(EVENTS.SERVER.ACTIVE_USERS, getConnectedUsers());
+        socket.emit(EVENTS.SERVER.ACTIVE_GROUPS, groupStore.getGroupsForUser(result.userId));
         socket.emit(EVENTS.SERVER.LOGIN_SUCCESS, result);
 
         logger.info({ userId: result.userId, username: result.username }, 'user logged in');
@@ -168,13 +232,13 @@ export function createServer(
     socket.on(EVENTS.CLIENT.MESSAGE_SEND, (payload) => {
       const rlResult = rateLimiters.check(socket.id);
       if (!rlResult.allowed) {
-        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, ['Rate limit exceeded']);
+        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, { reason: 'Rate limit exceeded' });
         return;
       }
 
       const valResult = validateMessagePayload(payload);
       if (!valResult.success) {
-        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, valResult.errors);
+        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, { reason: valResult.errors.join(', ') });
         return;
       }
 
@@ -183,14 +247,13 @@ export function createServer(
         return;
       }
 
-      const allUsers = userRegistry.getAllUsers();
-      const target = allUsers.find((u) => u.username === valResult.data.to);
+      const target = userRegistry.getUserByUsername(valResult.data.to);
 
       if (target === undefined) {
         socket.emit(EVENTS.SERVER.DELIVERY_FAILED, {
           delivered: false as const,
           reason: 'user_not_found' as const,
-          to: UserId(valResult.data.to),
+          to: valResult.data.to,
         });
         return;
       }
@@ -201,7 +264,7 @@ export function createServer(
         socket.emit(EVENTS.SERVER.DELIVERY_FAILED, {
           delivered: false as const,
           reason: 'user_disconnected' as const,
-          to: target.userId,
+          to: target.username,
         });
         return;
       }
@@ -210,6 +273,7 @@ export function createServer(
         from: sender.userId,
         fromUsername: sender.username,
         to: target.userId,
+        toUsername: target.username,
         ciphertext: valResult.data.ciphertext,
         iv: valResult.data.iv,
         timestamp: Date.now(),
@@ -230,8 +294,7 @@ export function createServer(
         return;
       }
 
-      const allUsers = userRegistry.getAllUsers();
-      const target = allUsers.find((u) => u.username === valResult.data.to);
+      const target = userRegistry.getUserByUsername(valResult.data.to);
       if (target === undefined) {
         return;
       }
@@ -248,13 +311,15 @@ export function createServer(
     socket.on(EVENTS.CLIENT.GROUP_CREATE, (payload) => {
       const rlResult = rateLimiters.check(socket.id);
       if (!rlResult.allowed) {
-        socket.emit(EVENTS.SERVER.GROUP_CREATED_ERROR, 'Rate limit exceeded');
+        socket.emit(EVENTS.SERVER.GROUP_CREATED_ERROR, { message: 'Rate limit exceeded' });
         return;
       }
 
       const valResult = validateGroupCreatePayload(payload);
       if (!valResult.success) {
-        socket.emit(EVENTS.SERVER.GROUP_CREATED_ERROR, valResult.errors.join(', '));
+        socket.emit(EVENTS.SERVER.GROUP_CREATED_ERROR, {
+          message: valResult.errors.join(', '),
+        });
         return;
       }
 
@@ -284,13 +349,17 @@ export function createServer(
     socket.on(EVENTS.CLIENT.GROUP_MESSAGE_SEND, (payload) => {
       const rlResult = rateLimiters.check(socket.id);
       if (!rlResult.allowed) {
-        socket.emit(EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED, 'Rate limit exceeded');
+        socket.emit(EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED, {
+          message: 'Rate limit exceeded',
+        });
         return;
       }
 
       const valResult = validateGroupMessagePayload(payload);
       if (!valResult.success) {
-        socket.emit(EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED, valResult.errors.join(', '));
+        socket.emit(EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED, {
+          message: valResult.errors.join(', '),
+        });
         return;
       }
 
@@ -299,13 +368,15 @@ export function createServer(
 
       const groupId = GroupId(valResult.data.groupId);
       if (!groupStore.isMember(groupId, sender.userId)) {
-        socket.emit(EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED, 'Not a group member');
+        socket.emit(EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED, {
+          message: 'Not a group member',
+        });
         return;
       }
 
       const group = groupStore.getGroup(groupId);
       if (group === undefined) {
-        socket.emit(EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED, 'Group not found');
+        socket.emit(EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED, { message: 'Group not found' });
         return;
       }
 
@@ -325,20 +396,22 @@ export function createServer(
     });
 
     socket.on('disconnect', (reason: string) => {
+      rateLimiters.remove(socket.id);
+
       const user = userRegistry.getUserBySocketId(SocketId(socket.id));
       if (user === undefined) {
         return;
       }
 
-      rateLimiters.remove(socket.id);
+      const payload = { userId: user.userId, username: user.username };
 
       if (reason === 'client namespace disconnect') {
         userRegistry.removeUserBySocketId(SocketId(socket.id));
-        io.emit(EVENTS.SERVER.USER_LEFT, user.userId);
+        io.emit(EVENTS.SERVER.USER_LEFT, payload);
         logger.info({ userId: user.userId, reason }, 'user disconnected (explicit)');
       } else {
         userRegistry.markDisconnected(user.userId);
-        io.emit(EVENTS.SERVER.USER_LEFT, user.userId);
+        io.emit(EVENTS.SERVER.USER_LEFT, payload);
         logger.warn({ userId: user.userId, reason }, 'user disconnected (unannounced)');
       }
     });

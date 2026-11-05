@@ -16,10 +16,22 @@ export class UserRegistry {
 
   #insertUser(userInfo: UserInfo, socketId: SocketId): UserInfo | undefined {
     for (const existing of this.#users.values()) {
-      if (existing.username === userInfo.username) {
+      if (existing.username !== userInfo.username) {
+        continue;
+      }
+      if (existing.userId !== userInfo.userId) {
         return undefined;
       }
+
+      this.cancelPendingRemoval(existing.userId);
+      this.#socketToUser.delete(existing.socketId);
+
+      const updated: UserInfo = { ...userInfo, joinedAt: existing.joinedAt };
+      this.#users.set(updated.userId, updated);
+      this.#socketToUser.set(socketId, updated);
+      return updated;
     }
+
     this.#users.set(userInfo.userId, userInfo);
     this.#socketToUser.set(socketId, userInfo);
     return userInfo;
@@ -78,6 +90,15 @@ export class UserRegistry {
 
   getUser(userId: UserId): UserInfo | undefined {
     return this.#users.get(userId);
+  }
+
+  getUserByUsername(username: string): UserInfo | undefined {
+    for (const user of this.#users.values()) {
+      if (user.username === username) {
+        return user;
+      }
+    }
+    return undefined;
   }
 
   getUserBySocketId(socketId: SocketId): UserInfo | undefined {

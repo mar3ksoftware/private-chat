@@ -11,7 +11,7 @@ export function GroupItem({ group, isSelected, onSelect }: GroupItemProps) {
     <button
       type="button"
       onClick={() => onSelect(group.groupId)}
-      className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors rounded-lg mx-2 ${
+      className={`flex items-center gap-3 px-4 py-2.5 text-left transition-colors rounded-lg mx-2 ${
         isSelected
           ? 'bg-indigo-600/20 text-indigo-300'
           : 'text-zinc-300 hover:bg-zinc-800/50 hover:text-zinc-100'

@@ -35,17 +35,54 @@ describe('UserRegistry', () => {
     expect(retrieved?.socketId).toBe(socketId);
   });
 
-  test('duplicate username rejected', () => {
+  test('different userId claiming an existing username is rejected', () => {
     const socketId1 = SocketId('sock-a');
     const socketId2 = SocketId('sock-b');
 
-    const first: UserInfo | undefined = registry.addUser('bob', socketId1);
+    const first: UserInfo | undefined = registry.registerSocket(UserId('user-a'), 'bob', socketId1);
     expect(first).toBeDefined();
 
-    const second: UserInfo | undefined = registry.addUser('bob', socketId2);
+    const second: UserInfo | undefined = registry.registerSocket(
+      UserId('user-b'),
+      'bob',
+      socketId2,
+    );
     expect(second).toBeUndefined();
 
     expect(registry.size).toBe(1);
+  });
+
+  test('same username and userId reattaches the new socket', () => {
+    const socketId1 = SocketId('sock-r1');
+    const socketId2 = SocketId('sock-r2');
+
+    const first = registry.addUser('bob', socketId1);
+    expect(first).toBeDefined();
+
+    const second = registry.addUser('bob', socketId2);
+    expect(second).toBeDefined();
+    expect(second?.socketId).toBe(socketId2);
+    expect(registry.getUserBySocketId(socketId1)).toBeUndefined();
+    expect(registry.getUserBySocketId(socketId2)?.socketId).toBe(socketId2);
+    expect(registry.size).toBe(1);
+  });
+
+  test('reattach cancels a pending removal timer', () => {
+    const userId = UserId('frank-reattach');
+    const onRemoved = vi.fn<(uid: ReturnType<typeof UserId>, uname: string) => void>();
+
+    registry.onUserRemoved = onRemoved;
+    registry.addUser('frank-reattach', SocketId('sock-fr1'));
+    registry.markDisconnected(userId);
+
+    const reattached = registry.addUser('frank-reattach', SocketId('sock-fr2'));
+    expect(reattached).toBeDefined();
+
+    vi.advanceTimersByTime(CONSTANTS.USER_STALE_TIMEOUT_MS);
+
+    expect(registry.getUser(userId)).toBeDefined();
+    expect(registry.size).toBe(1);
+    expect(onRemoved).not.toHaveBeenCalled();
   });
 
   test('removeUser deletes entry', () => {

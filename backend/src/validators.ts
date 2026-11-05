@@ -2,23 +2,25 @@ import { z } from 'zod';
 import type { ValidationResult } from './types';
 import { CONSTANTS } from './types';
 
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
 const usernameSchema = z
   .string()
   .min(CONSTANTS.MIN_USERNAME_LENGTH)
   .max(CONSTANTS.MAX_USERNAME_LENGTH)
   .regex(/^[a-zA-Z0-9_-]+$/);
 
-const messagePayloadSchema = z
-  .strictObject({
-    to: z.string().min(1).max(30),
-    ciphertext: z.string().min(1).max(CONSTANTS.MAX_MESSAGE_LENGTH),
-    iv: z.string().min(1),
-  })
-  .superRefine((data, ctx) => {
-    if (typeof data.ciphertext !== 'string') {
-      ctx.addIssue({ code: 'custom', message: 'ciphertext must be a string, not an object/array' });
-    }
-  });
+const ivSchema = z.string().min(1).max(CONSTANTS.MAX_IV_LENGTH).regex(BASE64_PATTERN);
+
+const userJoinPayloadSchema = z.strictObject({
+  username: usernameSchema,
+});
+
+const messagePayloadSchema = z.strictObject({
+  to: z.string().min(1).max(CONSTANTS.MAX_USERNAME_LENGTH),
+  ciphertext: z.string().min(1).max(CONSTANTS.MAX_CIPHERTEXT_LENGTH),
+  iv: ivSchema,
+});
 
 const pinSchema = z
   .string()
@@ -26,11 +28,7 @@ const pinSchema = z
   .optional();
 
 const registerPayloadSchema = z.strictObject({
-  username: z
-    .string()
-    .min(CONSTANTS.MIN_USERNAME_LENGTH)
-    .max(CONSTANTS.MAX_USERNAME_LENGTH)
-    .regex(/^[a-zA-Z0-9_-]+$/),
+  username: usernameSchema,
   password: z.string().min(CONSTANTS.MIN_PASSWORD_LENGTH).max(CONSTANTS.MAX_PASSWORD_LENGTH),
   pin: pinSchema,
 });
@@ -42,13 +40,15 @@ const loginPayloadSchema = z.strictObject({
 });
 
 const e2eePublicKeyPayloadSchema = z.strictObject({
-  to: z.string().min(1).max(30),
-  publicKey: z.string().min(1),
+  to: z.string().min(1).max(CONSTANTS.MAX_USERNAME_LENGTH),
+  publicKey: z.string().min(1).max(CONSTANTS.MAX_PUBLIC_KEY_LENGTH),
 });
 
 const groupCreatePayloadSchema = z.strictObject({
-  name: z.string().min(1).max(50),
-  members: z.array(z.string().min(1).max(30)).max(50),
+  name: z.string().min(1).max(CONSTANTS.MAX_GROUP_NAME_LENGTH),
+  members: z
+    .array(z.string().min(1).max(CONSTANTS.MAX_USERNAME_LENGTH))
+    .max(CONSTANTS.MAX_GROUP_MEMBERS),
 });
 
 const groupMessagePayloadSchema = z.strictObject({
@@ -56,12 +56,13 @@ const groupMessagePayloadSchema = z.strictObject({
   ciphertexts: z
     .array(
       z.strictObject({
-        to: z.string().min(1).max(30),
-        ciphertext: z.string().min(1),
-        iv: z.string().min(1),
+        to: z.string().min(1).max(CONSTANTS.MAX_USERNAME_LENGTH),
+        ciphertext: z.string().min(1).max(CONSTANTS.MAX_CIPHERTEXT_LENGTH),
+        iv: ivSchema,
       }),
     )
-    .min(1),
+    .min(1)
+    .max(CONSTANTS.MAX_GROUP_CIPHERTEXTS),
 });
 
 function toValidationResult<T>(schema: z.ZodType<T>, input: unknown): ValidationResult<T> {
@@ -74,6 +75,12 @@ function toValidationResult<T>(schema: z.ZodType<T>, input: unknown): Validation
 
 export function validateUsername(input: unknown): ValidationResult<string> {
   return toValidationResult(usernameSchema, input);
+}
+
+export function validateUserJoinPayload(
+  input: unknown,
+): ValidationResult<{ readonly username: string }> {
+  return toValidationResult(userJoinPayloadSchema, input);
 }
 
 export function validateMessagePayload(

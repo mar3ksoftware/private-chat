@@ -47,6 +47,15 @@ export type SocketData = {
 
 // ── Payload types ─────────────────────────────────────────────────────
 
+export type UserJoinPayload = {
+  readonly username: string;
+};
+
+export type UserLeftPayload = {
+  readonly userId: UserId;
+  readonly username: string;
+};
+
 export type EncryptedMessagePayload = {
   readonly to: string;
   readonly ciphertext: string;
@@ -80,9 +89,22 @@ export type PrivateMessage = {
   readonly from: UserId;
   readonly fromUsername: string;
   readonly to: UserId;
+  readonly toUsername: string;
   readonly ciphertext: string;
   readonly iv: string;
   readonly timestamp: number;
+};
+
+export type MessageRejectedPayload = {
+  readonly reason: string;
+};
+
+export type ErrorPayload = {
+  readonly message: string;
+};
+
+export type GroupErrorPayload = {
+  readonly message: string;
 };
 
 // ── Group types ──────────────────────────────────────────────────────
@@ -134,7 +156,13 @@ export type RateLimitResult =
 
 export type DeliveryResult =
   | { readonly delivered: true }
-  | { readonly delivered: false; readonly reason: 'user_disconnected' | 'user_not_found' };
+  | {
+      readonly delivered: false;
+      readonly reason: 'user_disconnected' | 'user_not_found';
+      readonly to: string;
+    };
+
+export type DeliveryFailedPayload = Extract<DeliveryResult, { readonly delivered: false }>;
 
 export type RegisterResult =
   | { readonly kind: 'register_success'; readonly userId: UserId; readonly username: string }
@@ -160,6 +188,10 @@ export type LoginResult =
 
 export const CONSTANTS = {
   MAX_MESSAGE_LENGTH: 5000,
+  MAX_CIPHERTEXT_LENGTH: 30_000,
+  MAX_IV_LENGTH: 64,
+  MAX_PUBLIC_KEY_LENGTH: 4096,
+  MAX_GROUP_CIPHERTEXTS: 100,
   USER_STALE_TIMEOUT_MS: 30_000,
   RATE_LIMIT_MAX: 10,
   RATE_LIMIT_WINDOW_MS: 1_000,
@@ -194,6 +226,7 @@ export const EVENTS = {
     DELIVERY_FAILED: 'delivery_failed',
     MESSAGE_REJECTED: 'message_rejected',
     ACTIVE_USERS: 'active_users',
+    ACTIVE_GROUPS: 'active_groups',
     ERROR: 'error',
     REGISTER_SUCCESS: 'register_success',
     REGISTER_ERROR: 'register_error',
@@ -210,15 +243,14 @@ export const EVENTS = {
 
 export type ServerToClientEvents = {
   readonly [EVENTS.SERVER.USER_JOINED]: (user: UserInfo) => void;
-  readonly [EVENTS.SERVER.USER_LEFT]: (userId: UserId) => void;
+  readonly [EVENTS.SERVER.USER_LEFT]: (payload: UserLeftPayload) => void;
   readonly [EVENTS.SERVER.PRIVATE_MESSAGE]: (message: PrivateMessage) => void;
   readonly [EVENTS.SERVER.E2EE_PUBLIC_KEY]: (relay: E2eePublicKeyRelay) => void;
-  readonly [EVENTS.SERVER.DELIVERY_FAILED]: (
-    result: DeliveryResult & { readonly to: UserId },
-  ) => void;
-  readonly [EVENTS.SERVER.MESSAGE_REJECTED]: (errors: readonly string[]) => void;
+  readonly [EVENTS.SERVER.DELIVERY_FAILED]: (result: DeliveryFailedPayload) => void;
+  readonly [EVENTS.SERVER.MESSAGE_REJECTED]: (payload: MessageRejectedPayload) => void;
   readonly [EVENTS.SERVER.ACTIVE_USERS]: (users: readonly UserInfo[]) => void;
-  readonly [EVENTS.SERVER.ERROR]: (message: string) => void;
+  readonly [EVENTS.SERVER.ACTIVE_GROUPS]: (groups: readonly GroupInfo[]) => void;
+  readonly [EVENTS.SERVER.ERROR]: (payload: ErrorPayload) => void;
   readonly [EVENTS.SERVER.REGISTER_SUCCESS]: (
     result: Extract<RegisterResult, { readonly kind: 'register_success' }>,
   ) => void;
@@ -232,13 +264,13 @@ export type ServerToClientEvents = {
     result: Extract<LoginResult, { readonly kind: 'login_error' }>,
   ) => void;
   readonly [EVENTS.SERVER.GROUP_CREATED]: (group: GroupInfo) => void;
-  readonly [EVENTS.SERVER.GROUP_CREATED_ERROR]: (error: string) => void;
+  readonly [EVENTS.SERVER.GROUP_CREATED_ERROR]: (payload: GroupErrorPayload) => void;
   readonly [EVENTS.SERVER.GROUP_MESSAGE]: (message: GroupMessage) => void;
-  readonly [EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED]: (error: string) => void;
+  readonly [EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED]: (payload: GroupErrorPayload) => void;
 };
 
 export type ClientToServerEvents = {
-  readonly [EVENTS.CLIENT.USER_JOIN]: (username: string) => void;
+  readonly [EVENTS.CLIENT.USER_JOIN]: (payload: UserJoinPayload) => void;
   readonly [EVENTS.CLIENT.MESSAGE_SEND]: (payload: EncryptedMessagePayload) => void;
   readonly [EVENTS.CLIENT.E2EE_PUBLIC_KEY]: (payload: E2eePublicKeyPayload) => void;
   readonly [EVENTS.CLIENT.USER_REGISTER]: (payload: RegisterPayload) => void;

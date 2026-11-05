@@ -11,10 +11,15 @@ import type { ClientToServerEvents, ServerToClientEvents } from './types';
 import { UserRegistry } from './user-registry';
 
 const io = new Server<ClientToServerEvents, ServerToClientEvents>();
+// `['*']` must stay the wildcard string: the engine treats an array as a list
+// of literal origins and would reject every request.
+const corsOrigin = config.corsOrigins.includes('*') ? '*' : [...config.corsOrigins];
 const engine = new Engine({
   path: '/socket.io/',
   pingInterval: config.pingInterval,
   pingTimeout: config.pingTimeout,
+  maxHttpBufferSize: 4 * 1024 * 1024,
+  cors: { origin: corsOrigin },
 });
 
 io.bind(engine);

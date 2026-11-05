@@ -24,9 +24,11 @@ export function ChatLayout() {
   }, []);
 
   return (
-    <div className="flex h-screen bg-zinc-950">
+    <div className="app-shell flex bg-zinc-950">
       <div
-        className={`${mobileView === 'sidebar' ? 'flex' : 'hidden'} md:flex w-72 border-r border-zinc-800/50 shrink-0`}
+        className={`${
+          mobileView === 'sidebar' ? 'flex' : 'hidden'
+        } min-h-0 w-full shrink-0 flex-col border-r border-zinc-800/50 md:flex md:w-72`}
       >
         <Sidebar
           selectedUser={selectedUser}
@@ -35,7 +37,11 @@ export function ChatLayout() {
           onSelectGroup={handleSelectGroup}
         />
       </div>
-      <div className={`${mobileView === 'chat' ? 'flex' : 'hidden'} md:flex flex-1 min-w-0`}>
+      <div
+        className={`${
+          mobileView === 'chat' ? 'flex' : 'hidden'
+        } min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex`}
+      >
         <ChatArea
           selectedUser={selectedUser}
           selectedGroup={selectedGroup}

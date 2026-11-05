@@ -1,6 +1,6 @@
 import type { Emoji } from 'frimousse';
 import { EmojiPicker as FrimoussePicker } from 'frimousse';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type EmojiPickerProps = {
   readonly onEmojiSelect: (emoji: string) => void;
@@ -17,6 +17,31 @@ export function EmojiPicker({ onEmojiSelect }: EmojiPickerProps) {
     },
     [onEmojiSelect],
   );
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleOutsideClick = (event: MouseEvent) => {
+      const container = containerRef.current;
+      if (container !== null && event.target instanceof Node && !container.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [isOpen]);
 
   return (
     <div ref={containerRef} className="relative">
@@ -45,10 +70,10 @@ export function EmojiPicker({ onEmojiSelect }: EmojiPickerProps) {
         </svg>
       </button>
       {isOpen && (
-        <div className="absolute bottom-full mb-2 left-0 z-50">
+        <div className="absolute bottom-full mb-2 left-0 z-50 max-w-[calc(100vw-1rem)]">
           <FrimoussePicker.Root onEmojiSelect={handleEmojiSelect}>
             <FrimoussePicker.Search placeholder="Search emoji..." />
-            <FrimoussePicker.Viewport className="h-72 w-72 overflow-auto rounded-lg border border-zinc-700/50 bg-zinc-900" />
+            <FrimoussePicker.Viewport className="h-72 max-h-[60vh] w-72 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border border-zinc-700/50 bg-zinc-900" />
           </FrimoussePicker.Root>
         </div>
       )}

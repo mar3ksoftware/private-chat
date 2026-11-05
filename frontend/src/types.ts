@@ -24,6 +24,7 @@ export type PrivateMessage = {
   readonly from: string;
   readonly fromUsername: string;
   readonly to: string;
+  readonly toUsername: string;
   readonly ciphertext: string;
   readonly iv: string;
   readonly timestamp: number;
@@ -34,6 +35,7 @@ export type DecryptedMessage = {
   readonly from: string;
   readonly fromUsername: string;
   readonly to: string;
+  readonly toUsername: string;
   readonly plaintext: string;
   readonly timestamp: number;
   readonly isOwn: boolean;
@@ -159,6 +161,7 @@ export type ServerToClientEvents = {
   delivery_failed: (payload: DeliveryResult) => void;
   message_rejected: (payload: { readonly reason: string }) => void;
   active_users: (payload: readonly UserInfo[]) => void;
+  active_groups: (payload: readonly GroupInfo[]) => void;
   error: (payload: { readonly message: string }) => void;
   register_success: (payload: RegisterResult) => void;
   register_error: (payload: RegisterResult) => void;
@@ -190,6 +193,7 @@ export const EVENTS = {
     DELIVERY_FAILED: 'delivery_failed',
     MESSAGE_REJECTED: 'message_rejected',
     ACTIVE_USERS: 'active_users',
+    ACTIVE_GROUPS: 'active_groups',
     ERROR: 'error',
     REGISTER_SUCCESS: 'register_success',
     REGISTER_ERROR: 'register_error',

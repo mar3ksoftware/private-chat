@@ -1,5 +1,8 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useChat } from '../context/ChatContext';
+
+const MAX_GROUP_NAME_LENGTH = 50;
 
 type CreateGroupModalProps = {
   readonly isOpen: boolean;
@@ -10,6 +13,13 @@ export function CreateGroupModal({ isOpen, onClose }: CreateGroupModalProps) {
   const { users, user, createGroup } = useChat();
   const [name, setName] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!isOpen) {
+      setName('');
+      setSelected(new Set());
+    }
+  }, [isOpen]);
 
   const toggleMember = useCallback((username: string) => {
     setSelected((prev) => {
@@ -36,15 +46,26 @@ export function CreateGroupModal({ isOpen, onClose }: CreateGroupModalProps) {
 
   const otherUsers = users.filter((u) => u.username !== user?.username);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="glass w-full max-w-md mx-4 rounded-2xl p-6 border border-zinc-700/50">
-        <h2 className="text-lg font-semibold text-zinc-100 mb-4">Create Group</h2>
+  // The Sidebar is a `backdrop-filter` element, which makes it the containing
+  // block for `position: fixed` descendants — portal to <body> so the dialog
+  // covers the viewport instead of only the sidebar column.
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-group-title"
+        className="glass w-full max-w-md rounded-2xl p-6 border border-zinc-700/50 max-h-[calc(100dvh-2rem)] overflow-y-auto"
+      >
+        <h2 id="create-group-title" className="text-lg font-semibold text-zinc-100 mb-4">
+          Create Group
+        </h2>
         <input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Group name"
+          maxLength={MAX_GROUP_NAME_LENGTH}
           className="w-full bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-2.5 text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 mb-4"
         />
         <div className="max-h-48 overflow-y-auto mb-4">
@@ -85,6 +106,7 @@ export function CreateGroupModal({ isOpen, onClose }: CreateGroupModalProps) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

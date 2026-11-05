@@ -22,8 +22,9 @@ describe('GroupStore', () => {
 
     expect(group.name).toBe('Test Group');
     expect(group.members.length).toBe(1);
-    expect(group.members[0].userId).toBe(UserId('user1'));
-    expect(group.members[0].isAdmin).toBe(true);
+    const [firstMember] = group.members;
+    expect(firstMember?.userId).toBe(UserId('user1'));
+    expect(firstMember?.isAdmin).toBe(true);
     expect(group.createdBy).toBe(UserId('user1'));
   });
 

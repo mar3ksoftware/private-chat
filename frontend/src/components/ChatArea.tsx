@@ -11,29 +11,36 @@ type ChatAreaProps = {
 };
 
 export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: ChatAreaProps) {
-  const { users, messages, sendMessage, groupMessages, groups, sendGroupMessage, logout } =
-    useChat();
-
-  const selectedUserInfo =
-    selectedUser !== null ? users.find((u) => u.username === selectedUser) : undefined;
-  const selectedUserId = selectedUserInfo?.userId;
+  const {
+    messages,
+    sendMessage,
+    groupMessages,
+    groups,
+    sendGroupMessage,
+    logout,
+    connectionStatus,
+  } = useChat();
 
   const selectedGroupInfo =
     selectedGroup !== null ? groups.find((g) => g.groupId === selectedGroup) : undefined;
 
+  // The peer may be offline, so match by username instead of requiring them to
+  // be present in the active user list.
   const filteredMessages =
-    selectedUser !== null && selectedUserId !== undefined
-      ? messages.filter((m) => m.fromUsername === selectedUser || m.to === selectedUserId)
+    selectedUser !== null
+      ? messages.filter((m) => m.fromUsername === selectedUser || m.toUsername === selectedUser)
       : selectedGroup !== null
         ? groupMessages.filter((m) => m.groupId === selectedGroup)
         : [];
 
-  const handleSend = (text: string) => {
+  const handleSend = (text: string): Promise<boolean> => {
     if (selectedUser !== null) {
-      void sendMessage(selectedUser, text);
-    } else if (selectedGroup !== null) {
-      void sendGroupMessage(selectedGroup, text);
+      return sendMessage(selectedUser, text);
     }
+    if (selectedGroup !== null) {
+      return sendGroupMessage(selectedGroup, text);
+    }
+    return Promise.resolve(false);
   };
 
   const displayName = selectedGroupInfo?.name ?? selectedUser;
@@ -42,19 +49,19 @@ export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: Chat
     <div className="flex flex-col h-full bg-zinc-950">
       <ChatHeader
         username={displayName}
-        subtitle={selectedGroupInfo !== null ? 'Group' : undefined}
+        subtitle={selectedGroupInfo !== undefined ? 'Group' : undefined}
         onLogout={logout}
         onBack={onBack}
         showBack={showBack}
       />
-      {displayName === undefined ? (
+      {displayName == null ? (
         <div className="flex-1 flex items-center justify-center">
           <p className="text-zinc-500 text-sm">Select a conversation</p>
         </div>
       ) : (
         <>
-          <MessageList messages={filteredMessages} selectedUser={selectedUser} />
-          <MessageInput onSend={handleSend} disabled={false} />
+          <MessageList messages={filteredMessages} />
+          <MessageInput onSend={handleSend} disabled={connectionStatus !== 'connected'} />
         </>
       )}
     </div>

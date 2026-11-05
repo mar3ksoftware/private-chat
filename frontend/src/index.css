@@ -16,11 +16,78 @@ html {
   color-scheme: dark;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   background-color: #09090b;
   color: #fafafa;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* ── Viewport shells ────────────────────────────────────────────────── */
+/*
+ * `100vh` is the fallback for browsers without dynamic viewport units.
+ * Modern browsers then use `100dvh`, which shrinks when mobile browser
+ * chrome (URL bar) or the on-screen keyboard is visible, so the composer
+ * and sidebar footers are never pushed below the visible area.
+ * Safe-area padding keeps content clear of notches and the home indicator.
+ */
+
+.app-shell {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+.auth-shell {
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+/* Any internal scroll region keeps its momentum and never chains to the page. */
+.overflow-y-auto,
+.overflow-x-auto,
+.overflow-auto {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Keyboard focus stays visible on flat glass surfaces. */
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--color-accent-hover);
+  outline-offset: 2px;
+}
+
+/* Touch devices get a comfortable 40px tap target for any row/button inside
+ * the glass panels (sidebar rows and auth actions), even when a child
+ * component's own padding is tighter. Desktop sizing is unchanged. */
+@media (pointer: coarse) {
+  .glass button {
+    min-height: 2.5rem;
+  }
 }
 
 /* ── Glassmorphism panel ────────────────────────────────────────────── */

@@ -54,7 +54,11 @@ export function RegisterForm() {
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           placeholder="Choose a username"
-          className="bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-3 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 w-full"
+          autoComplete="username"
+          autoCapitalize="none"
+          spellCheck={false}
+          maxLength={30}
+          className="w-full rounded-lg border border-zinc-700/50 bg-zinc-800/50 px-4 py-3 text-base text-zinc-100 placeholder-zinc-500 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/50 focus:outline-none"
         />
       </div>
 
@@ -71,7 +75,9 @@ export function RegisterForm() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Min 8 characters"
-          className="bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-3 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 w-full"
+          autoComplete="new-password"
+          maxLength={128}
+          className="w-full rounded-lg border border-zinc-700/50 bg-zinc-800/50 px-4 py-3 text-base text-zinc-100 placeholder-zinc-500 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/50 focus:outline-none"
         />
       </div>
 
@@ -88,7 +94,9 @@ export function RegisterForm() {
           value={confirmPassword}
           onChange={(e) => setConfirmPassword(e.target.value)}
           placeholder="Repeat password"
-          className="bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-3 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 w-full"
+          autoComplete="new-password"
+          maxLength={128}
+          className="w-full rounded-lg border border-zinc-700/50 bg-zinc-800/50 px-4 py-3 text-base text-zinc-100 placeholder-zinc-500 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/50 focus:outline-none"
         />
       </div>
 
@@ -102,7 +110,10 @@ export function RegisterForm() {
           value={pin}
           onChange={(e) => setPin(e.target.value)}
           placeholder="Extra security layer"
-          className="bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-3 text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 w-full"
+          autoComplete="one-time-code"
+          inputMode="numeric"
+          maxLength={6}
+          className="w-full rounded-lg border border-zinc-700/50 bg-zinc-800/50 px-4 py-3 text-base text-zinc-100 placeholder-zinc-500 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/50 focus:outline-none"
         />
         <p className="text-xs text-zinc-500 mt-1">Optional — adds extra security</p>
       </div>
@@ -112,7 +123,7 @@ export function RegisterForm() {
       <button
         type="submit"
         disabled={loading}
-        className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg px-4 py-3 w-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+        className="mt-2 w-full touch-manipulation rounded-lg bg-indigo-600 px-4 py-3 font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {loading ? 'Creating account...' : 'Create Account'}
       </button>

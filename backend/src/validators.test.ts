@@ -4,6 +4,7 @@ import {
   validateGroupCreatePayload,
   validateGroupMessagePayload,
   validateMessagePayload,
+  validateUserJoinPayload,
   validateUsername,
 } from './validators';
 
@@ -40,6 +41,21 @@ describe('validateUsername', () => {
   });
 });
 
+describe('validateUserJoinPayload', () => {
+  test('object username payload passes', () => {
+    const result = validateUserJoinPayload({ username: 'alice' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.username).toBe('alice');
+    }
+  });
+
+  test('bare string username fails', () => {
+    const result = validateUserJoinPayload('alice');
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('validateMessagePayload', () => {
   test('valid message payload passes', () => {
     const result = validateMessagePayload({
@@ -63,13 +79,22 @@ describe('validateMessagePayload', () => {
     }
   });
 
-  test('ciphertext exceeding 5000 chars fails', () => {
+  test('ciphertext exceeding 30000 chars fails', () => {
     const result = validateMessagePayload({
       to: 'bob',
-      ciphertext: 'x'.repeat(5001),
+      ciphertext: 'x'.repeat(30_001),
       iv: 'aGVsbG8=',
     });
     expect(result.success).toBe(false);
+  });
+
+  test('large ciphertext of 20000 chars passes', () => {
+    const result = validateMessagePayload({
+      to: 'bob',
+      ciphertext: 'x'.repeat(20_000),
+      iv: 'aGVsbG8=',
+    });
+    expect(result.success).toBe(true);
   });
 
   test('nested object as ciphertext fails', () => {
