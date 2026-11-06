@@ -1,0 +1,293 @@
+import 'json_utils.dart';
+
+/// Outbound `message:send` payload.
+class EncryptedMessagePayload {
+  const EncryptedMessagePayload({
+    required this.to,
+    required this.ciphertext,
+    required this.iv,
+  });
+
+  factory EncryptedMessagePayload.fromJson(Map<String, dynamic> json) {
+    return EncryptedMessagePayload(
+      to: readString(json['to']),
+      ciphertext: readString(json['ciphertext']),
+      iv: readString(json['iv']),
+    );
+  }
+
+  final String to;
+  final String ciphertext;
+  final String iv;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'to': to,
+    'ciphertext': ciphertext,
+    'iv': iv,
+  };
+}
+
+/// One recipient's copy of an encrypted group message.
+class GroupCiphertext {
+  const GroupCiphertext({
+    required this.to,
+    required this.ciphertext,
+    required this.iv,
+  });
+
+  factory GroupCiphertext.fromJson(Map<String, dynamic> json) {
+    return GroupCiphertext(
+      to: readString(json['to']),
+      ciphertext: readString(json['ciphertext']),
+      iv: readString(json['iv']),
+    );
+  }
+
+  final String to;
+  final String ciphertext;
+  final String iv;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'to': to,
+    'ciphertext': ciphertext,
+    'iv': iv,
+  };
+}
+
+/// Inbound `private_message` wire payload.
+///
+/// `timestamp` is Unix epoch milliseconds. The server echoes the sender's own
+/// message back to them, so both `fromUsername` and `toUsername` are present.
+class PrivateMessage {
+  const PrivateMessage({
+    required this.from,
+    required this.fromUsername,
+    required this.to,
+    required this.toUsername,
+    required this.ciphertext,
+    required this.iv,
+    required this.timestamp,
+  });
+
+  factory PrivateMessage.fromJson(Map<String, dynamic> json) {
+    return PrivateMessage(
+      from: readString(json['from']),
+      fromUsername: readString(json['fromUsername']),
+      to: readString(json['to']),
+      toUsername: readString(json['toUsername']),
+      ciphertext: readString(json['ciphertext']),
+      iv: readString(json['iv']),
+      timestamp: readInt(json['timestamp']),
+    );
+  }
+
+  final String from;
+  final String fromUsername;
+  final String to;
+  final String toUsername;
+  final String ciphertext;
+  final String iv;
+  final int timestamp;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'from': from,
+    'fromUsername': fromUsername,
+    'to': to,
+    'toUsername': toUsername,
+    'ciphertext': ciphertext,
+    'iv': iv,
+    'timestamp': timestamp,
+  };
+
+  /// Stable identity for the message, used to dedupe re-deliveries and to
+  /// replace a placeholder once decryption succeeds.
+  String get dedupeKey =>
+      '$from\u001f$to\u001f$timestamp\u001f$ciphertext\u001f$iv';
+}
+
+/// A private message after decryption, ready for rendering.
+class DecryptedMessage {
+  const DecryptedMessage({
+    required this.from,
+    required this.fromUsername,
+    required this.to,
+    required this.toUsername,
+    required this.plaintext,
+    required this.timestamp,
+    required this.isOwn,
+    required this.decryptionFailed,
+  });
+
+  factory DecryptedMessage.fromJson(Map<String, dynamic> json) {
+    return DecryptedMessage(
+      from: readString(json['from']),
+      fromUsername: readString(json['fromUsername']),
+      to: readString(json['to']),
+      toUsername: readString(json['toUsername']),
+      plaintext: readString(json['plaintext']),
+      timestamp: readInt(json['timestamp']),
+      isOwn: readBool(json['isOwn']),
+      decryptionFailed: readBool(json['decryptionFailed']),
+    );
+  }
+
+  final String from;
+  final String fromUsername;
+  final String to;
+  final String toUsername;
+  final String plaintext;
+  final int timestamp;
+  final bool isOwn;
+  final bool decryptionFailed;
+
+  /// The other participant in this conversation, regardless of direction.
+  String get peerUsername => isOwn ? toUsername : fromUsername;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'from': from,
+    'fromUsername': fromUsername,
+    'to': to,
+    'toUsername': toUsername,
+    'plaintext': plaintext,
+    'timestamp': timestamp,
+    'isOwn': isOwn,
+    'decryptionFailed': decryptionFailed,
+  };
+
+  DecryptedMessage copyWith({String? plaintext, bool? decryptionFailed}) {
+    return DecryptedMessage(
+      from: from,
+      fromUsername: fromUsername,
+      to: to,
+      toUsername: toUsername,
+      plaintext: plaintext ?? this.plaintext,
+      timestamp: timestamp,
+      isOwn: isOwn,
+      decryptionFailed: decryptionFailed ?? this.decryptionFailed,
+    );
+  }
+}
+
+/// Outbound `group:message:send` payload.
+class GroupEncryptedPayload {
+  const GroupEncryptedPayload({
+    required this.groupId,
+    required this.ciphertexts,
+  });
+
+  factory GroupEncryptedPayload.fromJson(Map<String, dynamic> json) {
+    return GroupEncryptedPayload(
+      groupId: readString(json['groupId']),
+      ciphertexts: readList(
+        json['ciphertexts'],
+      ).map((entry) => GroupCiphertext.fromJson(asJsonMap(entry))).toList(),
+    );
+  }
+
+  final String groupId;
+  final List<GroupCiphertext> ciphertexts;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'groupId': groupId,
+    'ciphertexts': ciphertexts.map((entry) => entry.toJson()).toList(),
+  };
+}
+
+/// Inbound `group:message` wire payload.
+class GroupMessage {
+  const GroupMessage({
+    required this.groupId,
+    required this.from,
+    required this.fromUsername,
+    required this.ciphertexts,
+    required this.timestamp,
+  });
+
+  factory GroupMessage.fromJson(Map<String, dynamic> json) {
+    return GroupMessage(
+      groupId: readString(json['groupId']),
+      from: readString(json['from']),
+      fromUsername: readString(json['fromUsername']),
+      ciphertexts: readList(
+        json['ciphertexts'],
+      ).map((entry) => GroupCiphertext.fromJson(asJsonMap(entry))).toList(),
+      timestamp: readInt(json['timestamp']),
+    );
+  }
+
+  final String groupId;
+  final String from;
+  final String fromUsername;
+  final List<GroupCiphertext> ciphertexts;
+  final int timestamp;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'groupId': groupId,
+    'from': from,
+    'fromUsername': fromUsername,
+    'ciphertexts': ciphertexts.map((entry) => entry.toJson()).toList(),
+    'timestamp': timestamp,
+  };
+
+  String get dedupeKey =>
+      '$groupId\u001f$from\u001f$timestamp\u001f'
+      '${ciphertexts.map((entry) => '${entry.to}:${entry.ciphertext}:${entry.iv}').join(',')}';
+}
+
+/// A group message after decryption, ready for rendering.
+class DecryptedGroupMessage {
+  const DecryptedGroupMessage({
+    required this.groupId,
+    required this.from,
+    required this.fromUsername,
+    required this.plaintext,
+    required this.timestamp,
+    required this.isOwn,
+    required this.decryptionFailed,
+  });
+
+  factory DecryptedGroupMessage.fromJson(Map<String, dynamic> json) {
+    return DecryptedGroupMessage(
+      groupId: readString(json['groupId']),
+      from: readString(json['from']),
+      fromUsername: readString(json['fromUsername']),
+      plaintext: readString(json['plaintext']),
+      timestamp: readInt(json['timestamp']),
+      isOwn: readBool(json['isOwn']),
+      decryptionFailed: readBool(json['decryptionFailed']),
+    );
+  }
+
+  final String groupId;
+  final String from;
+  final String fromUsername;
+  final String plaintext;
+  final int timestamp;
+  final bool isOwn;
+  final bool decryptionFailed;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'groupId': groupId,
+    'from': from,
+    'fromUsername': fromUsername,
+    'plaintext': plaintext,
+    'timestamp': timestamp,
+    'isOwn': isOwn,
+    'decryptionFailed': decryptionFailed,
+  };
+
+  DecryptedGroupMessage copyWith({
+    String? plaintext,
+    bool? decryptionFailed,
+  }) {
+    return DecryptedGroupMessage(
+      groupId: groupId,
+      from: from,
+      fromUsername: fromUsername,
+      plaintext: plaintext ?? this.plaintext,
+      timestamp: timestamp,
+      isOwn: isOwn,
+      decryptionFailed: decryptionFailed ?? this.decryptionFailed,
+    );
+  }
+}
