@@ -1,5 +1,17 @@
 # TODO
 
+## Comprehensive README
+
+After all planned features are done, rewrite README.md into a full project
+guide:
+- What the app is, features overview (E2EE, groups, admin/vote-kick, TLS).
+- Setup guide: backend (Bun), web frontend (Vite), Flutter app (desktop +
+  Android APK), environment variables, TLS certificate setup with a domain.
+- How to run everything locally and on the LAN, with firewall notes.
+- Architecture overview: event contract, E2EE flow (P-256 + HKDF + AES-GCM),
+  storage (what is and is not persisted).
+- Testing: how to run each test suite and the live E2E test.
+
 ## Media sharing (pictures / videos)
 
 Deferred until the group-management work (offline members, admin add/remove,
