@@ -5,7 +5,10 @@ import '../../state/chat_controller.dart';
 import '../theme/app_theme.dart';
 
 /// Bottom sheet for creating a group: name field plus a member checklist.
-void showCreateGroupSheet(BuildContext context, {required ChatController controller}) {
+void showCreateGroupSheet(
+  BuildContext context, {
+  required ChatController controller,
+}) {
   showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -73,96 +76,124 @@ class _CreateGroupSheetState extends State<CreateGroupSheet> {
               for (final user in controller.users)
                 if (user.username != me?.username) user,
             ];
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: AppColors.borderStrong,
-                      borderRadius: BorderRadius.circular(2),
+            // The Create button needs a name AND at least one member ticked —
+            // say which one is missing instead of leaving it silently dead.
+            final String? hint;
+            if (_nameController.text.trim().isEmpty) {
+              hint = 'Enter a group name';
+            } else if (_selected.isEmpty) {
+              hint = others.isEmpty
+                  ? 'No other users online to add'
+                  : 'Select at least one member';
+            } else {
+              hint = null;
+            }
+            return SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: AppColors.borderStrong,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 14),
-                const Text(
-                  'Create Group',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: -0.2,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: _nameController,
-                  onChanged: (_) => setState(() {}),
-                  maxLength: _maxNameLength,
-                  textCapitalization: TextCapitalization.sentences,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    color: AppColors.textPrimary,
-                  ),
-                  decoration: const InputDecoration(
-                    hintText: 'Group name',
-                    counterText: '',
-                  ),
-                ),
-                const SizedBox(height: 14),
-                const Text(
-                  'MEMBERS',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.8,
-                    color: AppColors.textMuted,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                if (others.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 12),
-                    child: Text(
-                      'No other users online',
-                      style: TextStyle(fontSize: 13, color: AppColors.textMuted),
-                    ),
-                  )
-                else
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 240),
-                    child: ListView(
-                      shrinkWrap: true,
-                      padding: EdgeInsets.zero,
-                      children: [
-                        for (final user in others)
-                          _MemberTile(
-                            username: user.username,
-                            selected: _selected.contains(user.username),
-                            onChanged: () => _toggleMember(user.username),
-                          ),
-                      ],
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Create Group',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.2,
+                      color: AppColors.textPrimary,
                     ),
                   ),
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: const Text('Cancel'),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _nameController,
+                    onChanged: (_) => setState(() {}),
+                    maxLength: _maxNameLength,
+                    textCapitalization: TextCapitalization.sentences,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textPrimary,
                     ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: _canCreate ? _submit : null,
-                      child: const Text('Create'),
+                    decoration: const InputDecoration(
+                      hintText: 'Group name',
+                      counterText: '',
                     ),
-                  ],
-                ),
-              ],
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'MEMBERS',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.8,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  if (others.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text(
+                        'No other users online',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                    )
+                  else
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 240),
+                      child: ListView(
+                        shrinkWrap: true,
+                        padding: EdgeInsets.zero,
+                        children: [
+                          for (final user in others)
+                            _MemberTile(
+                              username: user.username,
+                              selected: _selected.contains(user.username),
+                              onChanged: () => _toggleMember(user.username),
+                            ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 16),
+                  if (hint != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        hint,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('Cancel'),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: _canCreate ? _submit : null,
+                        child: const Text('Create'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             );
           },
         ),
@@ -206,10 +237,7 @@ class _MemberTile extends StatelessWidget {
               child: Text(
                 username,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: AppColors.textBody,
-                ),
+                style: const TextStyle(fontSize: 14, color: AppColors.textBody),
               ),
             ),
           ],
