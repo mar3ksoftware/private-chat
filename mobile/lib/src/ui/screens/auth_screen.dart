@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../net/server_config.dart';
 import '../../state/chat_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/connection_status.dart';
 import '../widgets/glass_panel.dart';
+import '../widgets/server_config_scope.dart';
 
 /// Sign in / Register / Guest tabs inside one glass card, matching the web
 /// `AuthScreen`.
@@ -47,12 +49,16 @@ class _AuthScreenState extends State<AuthScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 420),
-                child: GlassPanel(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    GlassPanel(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
                       const Icon(
                         Icons.lock_outline,
                         size: 30,
@@ -109,8 +115,12 @@ class _AuthScreenState extends State<AuthScreen> {
                           status: controller.connectionStatus,
                         ),
                       ),
-                    ],
-                  ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const _ServerAddressTile(),
+                  ],
                 ),
               ),
             ),
@@ -176,6 +186,179 @@ class _AuthTabButton extends StatelessWidget {
             color: active ? Colors.white : AppColors.textSecondary,
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ── Server address ───────────────────────────────────────────────────────
+
+/// Compact outlined "Server" row under the auth card. Expands into a text
+/// field prefilled with the address the current controller uses; saving a
+/// valid one persists it and asks the app to recreate the controller.
+///
+/// Only reachable while logged out — changing servers mid-session is not
+/// supported, so there is no live-migration logic here.
+class _ServerAddressTile extends StatefulWidget {
+  const _ServerAddressTile();
+
+  @override
+  State<_ServerAddressTile> createState() => _ServerAddressTileState();
+}
+
+class _ServerAddressTileState extends State<_ServerAddressTile> {
+  final TextEditingController _url = TextEditingController();
+  bool _expanded = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _url.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    setState(() {
+      _expanded = !_expanded;
+      _error = null;
+      if (_expanded) {
+        // Always start from the address the app is actually using.
+        _url.text = ServerConfigScope.of(context).url;
+      }
+    });
+  }
+
+  Future<void> _save() async {
+    final raw = _url.text;
+    final error = ServerConfig.validationError(raw);
+    if (error != null) {
+      setState(() => _error = error);
+      return;
+    }
+    final url = ServerConfig.normalize(raw);
+    await ServerConfig.save(url);
+    if (!mounted) return;
+    // Hand off to the app: it swaps its controller for one pointing at
+    // [url], then this row collapses and shows the new address.
+    ServerConfigScope.of(context).onServerSaved(url);
+    setState(() {
+      _error = null;
+      _expanded = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currentUrl = ServerConfigScope.of(context).url;
+    if (!_expanded) return _buildToggle(currentUrl);
+    return _buildEditor();
+  }
+
+  Widget _buildToggle(String currentUrl) {
+    return OutlinedButton(
+      key: const Key('server-address-toggle'),
+      onPressed: _toggle,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AppColors.textSecondary,
+        side: const BorderSide(color: AppColors.border),
+        minimumSize: const Size.fromHeight(40),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.dns_outlined, size: 15, color: AppColors.textMuted),
+          const SizedBox(width: 8),
+          const Text('Server'),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              currentUrl,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w400,
+                color: AppColors.textMuted,
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          const Icon(
+            Icons.expand_more,
+            size: 18,
+            color: AppColors.textMuted,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEditor() {
+    return Container(
+      key: const Key('server-address-editor'),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+      decoration: BoxDecoration(
+        color: AppColors.fill,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Server address',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            key: const Key('server-address-input'),
+            controller: _url,
+            keyboardType: TextInputType.url,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _save(),
+            style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
+            decoration: const InputDecoration(
+              hintText: 'http://192.168.1.5:3000',
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _error!,
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.dangerSoft,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextButton(
+                  key: const Key('server-address-cancel'),
+                  onPressed: _toggle,
+                  child: const Text('Cancel'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                key: const Key('server-address-save'),
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(96, 40),
+                ),
+                onPressed: _save,
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
