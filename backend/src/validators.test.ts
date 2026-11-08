@@ -3,6 +3,7 @@ import type { ValidationResult } from './types';
 import {
   validateGroupCreatePayload,
   validateGroupMessagePayload,
+  validateGroupTargetPayload,
   validateMessagePayload,
   validateUserJoinPayload,
   validateUsername,
@@ -231,6 +232,36 @@ describe('validateGroupMessagePayload', () => {
       groupId: 'abc',
       ciphertexts: [{ to: 'alice', ciphertext: 'enc', iv: 'iv', extra: true }],
     });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('validateGroupTargetPayload', () => {
+  test('valid payload passes', () => {
+    const result = validateGroupTargetPayload({ groupId: 'abc-123', username: 'alice' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.groupId).toBe('abc-123');
+      expect(result.data.username).toBe('alice');
+    }
+  });
+
+  test('extra field fails', () => {
+    const result = validateGroupTargetPayload({
+      groupId: 'abc-123',
+      username: 'alice',
+      extra: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  test('username with bad chars fails', () => {
+    const result = validateGroupTargetPayload({ groupId: 'abc-123', username: 'bad name!' });
+    expect(result.success).toBe(false);
+  });
+
+  test('empty groupId fails', () => {
+    const result = validateGroupTargetPayload({ groupId: '', username: 'alice' });
     expect(result.success).toBe(false);
   });
 });

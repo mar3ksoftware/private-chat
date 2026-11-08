@@ -4,6 +4,7 @@ import '../../models/models.dart';
 import '../../state/chat_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/connection_status.dart';
+import '../widgets/group_members_sheet.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/message_composer.dart';
 import '../widgets/message_list.dart';
@@ -67,7 +68,10 @@ class ChatScreen extends StatelessWidget {
       listenable: controller,
       builder: (context, _) {
         final group = _findGroup();
-        final title = group?.name ?? peerUsername ?? groupId ?? 'Private Chat';
+        final title =
+            group?.name ??
+            peerUsername ??
+            (groupId != null ? 'Group' : 'Private Chat');
         return SafeArea(
           child: Column(
             children: [
@@ -77,6 +81,13 @@ class ChatScreen extends StatelessWidget {
                 status: controller.connectionStatus,
                 showBack: showBack,
                 showStatusLabel: !showBack,
+                onMembers: group == null
+                    ? null
+                    : () => showGroupMembersSheet(
+                        context,
+                        controller: controller,
+                        groupId: group.groupId,
+                      ),
                 onLogout: () {
                   controller.logout();
                   // On phones the chat sits on top of the list; drop it so
@@ -108,6 +119,7 @@ class _ChatHeader extends StatelessWidget {
     required this.showStatusLabel,
     required this.onLogout,
     this.subtitle,
+    this.onMembers,
   });
 
   final String title;
@@ -116,6 +128,7 @@ class _ChatHeader extends StatelessWidget {
   final bool showBack;
   final bool showStatusLabel;
   final VoidCallback onLogout;
+  final VoidCallback? onMembers;
 
   @override
   Widget build(BuildContext context) {
@@ -167,6 +180,16 @@ class _ChatHeader extends StatelessWidget {
                 ],
               ),
             ),
+            if (onMembers != null)
+              IconButton(
+                tooltip: 'Members',
+                onPressed: onMembers,
+                icon: const Icon(
+                  Icons.people_outline,
+                  size: 22,
+                  color: AppColors.textSecondary,
+                ),
+              ),
             ConnectionBadge(status: status, showLabel: showStatusLabel),
             TextButton(onPressed: onLogout, child: const Text('Logout')),
           ],

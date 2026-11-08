@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react';
 import { useChat } from '../context/ChatContext';
 import { ChatHeader } from './ChatHeader';
+import { GroupMembersPanel } from './GroupMembersPanel';
 import { MessageInput } from './MessageInput';
 import { MessageList } from './MessageList';
 
@@ -20,6 +22,15 @@ export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: Chat
     logout,
     connectionStatus,
   } = useChat();
+  const [showMembers, setShowMembers] = useState(false);
+
+  useEffect(() => {
+    // The drawer hides itself whenever no group is selected, so only a switch
+    // between conversations needs an actual reset.
+    if (selectedGroup !== null) {
+      setShowMembers(false);
+    }
+  }, [selectedGroup]);
 
   const selectedGroupInfo =
     selectedGroup !== null ? groups.find((g) => g.groupId === selectedGroup) : undefined;
@@ -46,13 +57,16 @@ export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: Chat
   const displayName = selectedGroupInfo?.name ?? selectedUser;
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950">
+    <div className="relative flex flex-col h-full bg-zinc-950">
       <ChatHeader
         username={displayName}
         subtitle={selectedGroupInfo !== undefined ? 'Group' : undefined}
         onLogout={logout}
         onBack={onBack}
         showBack={showBack}
+        onMembersClick={
+          selectedGroupInfo !== undefined ? () => setShowMembers((v) => !v) : undefined
+        }
       />
       {displayName == null ? (
         <div className="flex-1 flex items-center justify-center">
@@ -63,6 +77,9 @@ export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: Chat
           <MessageList messages={filteredMessages} />
           <MessageInput onSend={handleSend} disabled={connectionStatus !== 'connected'} />
         </>
+      )}
+      {showMembers && selectedGroupInfo !== undefined && (
+        <GroupMembersPanel group={selectedGroupInfo} onClose={() => setShowMembers(false)} />
       )}
     </div>
   );

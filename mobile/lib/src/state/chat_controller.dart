@@ -142,6 +142,8 @@ class ChatController extends ChangeNotifier {
   ActiveUser? _me;
   List<UserInfo> _users = <UserInfo>[];
   List<GroupInfo> _groups = <GroupInfo>[];
+  List<String> _directory = <String>[];
+  final Map<String, KickTally> _kickTallies = <String, KickTally>{};
   String? _selectedPeer;
   String? _selectedGroup;
   bool _isLoading = false;
@@ -167,6 +169,12 @@ class ChatController extends ChangeNotifier {
   List<UserInfo> get users => List<UserInfo>.unmodifiable(_users);
 
   List<GroupInfo> get groups => List<GroupInfo>.unmodifiable(_groups);
+
+  /// Every known username from the `users:directory` snapshot.
+  List<String> get directory => List<String>.unmodifiable(_directory);
+
+  /// The current vote-kick tally for [groupId], if one is open or terminal.
+  KickTally? kickTallyFor(String groupId) => _kickTallies[groupId];
 
   /// Username of the selected private conversation, if any.
   String? get selectedPeer => _selectedPeer;
@@ -260,6 +268,8 @@ class ChatController extends ChangeNotifier {
     _e2ee = E2eeSession();
     _users.clear();
     _groups.clear();
+    _directory.clear();
+    _kickTallies.clear();
     _privateByPeer.clear();
     _groupByGroup.clear();
     _pendingPrivate.clear();
@@ -302,6 +312,27 @@ class ChatController extends ChangeNotifier {
   /// Sends `group:create`.
   void createGroup(String name, List<String> members) {
     _socket.sendGroupCreate(GroupCreatePayload(name: name, members: members));
+  }
+
+  /// Sends `group:member:add` — the server enforces the admin rules.
+  void addMember(String groupId, String username) {
+    _socket.sendGroupMemberAdd(
+      GroupTargetPayload(groupId: groupId, username: username),
+    );
+  }
+
+  /// Sends `group:member:remove` — the server enforces the admin rules.
+  void removeMember(String groupId, String username) {
+    _socket.sendGroupMemberRemove(
+      GroupTargetPayload(groupId: groupId, username: username),
+    );
+  }
+
+  /// Sends `group:kick:vote` to vote [username] out of [groupId].
+  void kickVote(String groupId, String username) {
+    _socket.sendGroupKickVote(
+      GroupTargetPayload(groupId: groupId, username: username),
+    );
   }
 
   /// Encrypts [plaintext] for [toUsername] and emits `message:send`.
@@ -432,6 +463,9 @@ class ChatController extends ChangeNotifier {
       _socket.onGroupCreatedError(_handleGroupError),
       _socket.onGroupMessage(_handleGroupMessage),
       _socket.onGroupMessageDeliveryFailed(_handleGroupError),
+      _socket.onUsersDirectory(_handleUsersDirectory),
+      _socket.onGroupMemberRemoved(_handleGroupMemberRemoved),
+      _socket.onGroupKickTally(_handleKickTally),
       _socket.onDeliveryFailed(_handleDeliveryFailed),
       _socket.onMessageRejected(_handleMessageRejected),
       _socket.onError(_handleErrorEvent),
@@ -507,6 +541,7 @@ class ChatController extends ChangeNotifier {
       );
       _isLoading = false;
     }
+    if (!_directory.contains(user.username)) _directory.add(user.username);
     _upsertUser(user);
 
     final me = _me;
@@ -541,17 +576,48 @@ class ChatController extends ChangeNotifier {
 
   void _handleActiveGroups(List<GroupInfo> groups) {
     _groups = List<GroupInfo>.of(groups);
+    // The server re-sends the active tallies right after this snapshot.
+    _kickTallies.clear();
+    _notify();
+  }
+
+  void _handleUsersDirectory(List<String> names) {
+    _directory = List<String>.of(names);
     _notify();
   }
 
   void _handleGroupCreated(GroupInfo group) {
-    // A group can be re-sent (e.g. new member added), so replace on same id.
+    // Full group state — re-sent on create and every membership change; replace on same id.
     final index = _groups.indexWhere((g) => g.groupId == group.groupId);
     if (index == -1) {
       _groups.add(group);
     } else {
       _groups[index] = group;
     }
+    _notify();
+  }
+
+  void _handleGroupMemberRemoved(GroupMemberRemovedPayload payload) {
+    if (payload.username != _me?.username) {
+      // Only the removed user is targeted; everyone else updates through the
+      // re-sent `group:created`.
+      _notify();
+      return;
+    }
+    final index = _groups.indexWhere((g) => g.groupId == payload.groupId);
+    final name = index == -1 ? null : _groups[index].name;
+    if (index != -1) _groups.removeAt(index);
+    _kickTallies.remove(payload.groupId);
+    if (_selectedGroup == payload.groupId) _selectedGroup = null;
+    _showError(
+      payload.reason == 'kicked'
+          ? 'You were voted out of ${name ?? 'the group'}.'
+          : 'You were removed from ${name ?? 'the group'}.',
+    );
+  }
+
+  void _handleKickTally(KickTally tally) {
+    _kickTallies[tally.groupId] = tally;
     _notify();
   }
 

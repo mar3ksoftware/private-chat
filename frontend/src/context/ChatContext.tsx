@@ -6,6 +6,7 @@ import type {
   DecryptedGroupMessage,
   DecryptedMessage,
   GroupInfo,
+  KickTally,
   LoginPayload,
   UserInfo,
 } from '../types';
@@ -21,6 +22,8 @@ type ChatState = {
   readonly messages: readonly DecryptedMessage[];
   readonly groups: readonly GroupInfo[];
   readonly groupMessages: readonly DecryptedGroupMessage[];
+  readonly directory: readonly string[];
+  readonly kickTallies: readonly KickTally[];
   readonly connectionStatus: 'connecting' | 'connected' | 'disconnected';
   readonly error: string | null;
 };
@@ -31,6 +34,8 @@ const initialState: ChatState = {
   messages: [],
   groups: [],
   groupMessages: [],
+  directory: [],
+  kickTallies: [],
   connectionStatus: 'connecting',
   error: null,
 };
@@ -47,7 +52,12 @@ type ChatAction =
   | { type: 'ADD_MESSAGE'; payload: DecryptedMessage }
   | { type: 'SET_GROUPS'; payload: readonly GroupInfo[] }
   | { type: 'ADD_GROUP'; payload: GroupInfo }
+  | { type: 'REMOVE_GROUP'; payload: string }
   | { type: 'ADD_GROUP_MESSAGE'; payload: DecryptedGroupMessage }
+  | { type: 'SET_DIRECTORY'; payload: readonly string[] }
+  | { type: 'ADD_DIRECTORY_USER'; payload: string }
+  | { type: 'SET_KICK_TALLIES'; payload: readonly KickTally[] }
+  | { type: 'UPSERT_KICK_TALLY'; payload: KickTally }
   | {
       type: 'SET_CONNECTION_STATUS';
       payload: 'connecting' | 'connected' | 'disconnected';
@@ -66,6 +76,8 @@ function reducer(state: ChatState, action: ChatAction): ChatState {
         messages: [],
         groups: [],
         groupMessages: [],
+        directory: [],
+        kickTallies: [],
         error: null,
       };
     case 'SET_USERS':
@@ -87,7 +99,7 @@ function reducer(state: ChatState, action: ChatAction): ChatState {
     case 'SET_GROUPS':
       return { ...state, groups: action.payload };
     case 'ADD_GROUP': {
-      // A group can be re-sent (e.g. new member added), so replace on same id.
+      // Full group state — re-sent on create and every membership change; replace on same id.
       const index = state.groups.findIndex((g) => g.groupId === action.payload.groupId);
       if (index === -1) {
         return { ...state, groups: [...state.groups, action.payload] };
@@ -95,6 +107,26 @@ function reducer(state: ChatState, action: ChatAction): ChatState {
       const groups = state.groups.slice();
       groups[index] = action.payload;
       return { ...state, groups };
+    }
+    case 'REMOVE_GROUP':
+      return { ...state, groups: state.groups.filter((g) => g.groupId !== action.payload) };
+    case 'SET_DIRECTORY':
+      return { ...state, directory: action.payload };
+    case 'ADD_DIRECTORY_USER':
+      if (state.directory.includes(action.payload)) {
+        return state;
+      }
+      return { ...state, directory: [...state.directory, action.payload] };
+    case 'SET_KICK_TALLIES':
+      return { ...state, kickTallies: action.payload };
+    case 'UPSERT_KICK_TALLY': {
+      const index = state.kickTallies.findIndex((t) => t.groupId === action.payload.groupId);
+      if (index === -1) {
+        return { ...state, kickTallies: [...state.kickTallies, action.payload] };
+      }
+      const kickTallies = state.kickTallies.slice();
+      kickTallies[index] = action.payload;
+      return { ...state, kickTallies };
     }
     case 'ADD_GROUP_MESSAGE':
       return { ...state, groupMessages: [...state.groupMessages, action.payload] };
@@ -143,8 +175,13 @@ export type ChatContextValue = {
   readonly sendMessage: (toUsername: string, plaintext: string) => Promise<boolean>;
   readonly groups: readonly GroupInfo[];
   readonly groupMessages: readonly DecryptedGroupMessage[];
+  readonly directory: readonly string[];
+  readonly kickTallies: readonly KickTally[];
   readonly createGroup: (name: string, members: readonly string[]) => void;
   readonly sendGroupMessage: (groupId: string, plaintext: string) => Promise<boolean>;
+  readonly addMember: (groupId: string, username: string) => void;
+  readonly removeMember: (groupId: string, username: string) => void;
+  readonly voteKick: (groupId: string, username: string) => void;
   readonly connectionStatus: 'connecting' | 'connected' | 'disconnected';
   readonly error: string | null;
 };
@@ -278,6 +315,18 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     socketRef.current.emit(EVENTS.CLIENT.GROUP_CREATE, { name, members });
   }, []);
 
+  const addMember = useCallback((groupId: string, username: string) => {
+    socketRef.current.emit(EVENTS.CLIENT.GROUP_MEMBER_ADD, { groupId, username });
+  }, []);
+
+  const removeMember = useCallback((groupId: string, username: string) => {
+    socketRef.current.emit(EVENTS.CLIENT.GROUP_MEMBER_REMOVE, { groupId, username });
+  }, []);
+
+  const voteKick = useCallback((groupId: string, username: string) => {
+    socketRef.current.emit(EVENTS.CLIENT.GROUP_KICK_VOTE, { groupId, username });
+  }, []);
+
   const sendGroupMessage = useCallback(
     async (groupId: string, plaintext: string): Promise<boolean> => {
       const currentUser = stateRef.current.user;
@@ -407,6 +456,7 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
         });
       }
       dispatch({ type: 'ADD_USER', payload: user });
+      dispatch({ type: 'ADD_DIRECTORY_USER', payload: user.username });
 
       // Our own key is derived locally when needed (see ensureSelfKey).
       if (user.username === stateRef.current.user?.username) return;
@@ -438,6 +488,8 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     });
 
     socket.on(EVENTS.SERVER.ACTIVE_GROUPS, (groups) => {
+      // The server re-sends active tallies right after this snapshot.
+      dispatch({ type: 'SET_KICK_TALLIES', payload: [] });
       dispatch({ type: 'SET_GROUPS', payload: groups });
     });
 
@@ -490,6 +542,28 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
 
     socket.on(EVENTS.SERVER.GROUP_CREATED_ERROR, (data) => {
       showError(data.message);
+    });
+
+    socket.on(EVENTS.SERVER.USERS_DIRECTORY, (usernames) => {
+      dispatch({ type: 'SET_DIRECTORY', payload: usernames });
+    });
+
+    socket.on(EVENTS.SERVER.GROUP_MEMBER_REMOVED, (payload) => {
+      // Capture the name before dropping the group — the toast needs it afterwards.
+      const group = stateRef.current.groups.find((g) => g.groupId === payload.groupId);
+      const name = group?.name;
+      dispatch({ type: 'REMOVE_GROUP', payload: payload.groupId });
+      if (payload.username === stateRef.current.user?.username) {
+        showError(
+          payload.reason === 'kicked'
+            ? `You were voted out of ${name ?? 'the group'}.`
+            : `You were removed from ${name ?? 'the group'}.`,
+        );
+      }
+    });
+
+    socket.on(EVENTS.SERVER.GROUP_KICK_TALLY, (tally) => {
+      dispatch({ type: 'UPSERT_KICK_TALLY', payload: tally });
     });
 
     socket.on(EVENTS.SERVER.GROUP_MESSAGE, (msg) => {
@@ -578,8 +652,13 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     sendMessage,
     groups: state.groups,
     groupMessages: state.groupMessages,
+    directory: state.directory,
+    kickTallies: state.kickTallies,
     createGroup,
     sendGroupMessage,
+    addMember,
+    removeMember,
+    voteKick,
     connectionStatus: state.connectionStatus,
     error: state.error,
   };

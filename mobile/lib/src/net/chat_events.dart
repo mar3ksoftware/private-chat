@@ -11,6 +11,9 @@ abstract final class ChatEvents {
   static const userLogin = 'user:login';
   static const groupCreate = 'group:create';
   static const groupMessageSend = 'group:message:send';
+  static const groupMemberAdd = 'group:member:add';
+  static const groupMemberRemove = 'group:member:remove';
+  static const groupKickVote = 'group:kick:vote';
 
   // Server -> client.
   static const userJoined = 'user:joined';
@@ -29,6 +32,9 @@ abstract final class ChatEvents {
   static const groupCreatedError = 'group:created_error';
   static const groupMessage = 'group:message';
   static const groupMessageDeliveryFailed = 'group:message_delivery_failed';
+  static const usersDirectory = 'users:directory';
+  static const groupMemberRemoved = 'group:member:removed';
+  static const groupKickTally = 'group:kick:tally';
 
   // Socket.io lifecycle.
   static const connect = 'connect';

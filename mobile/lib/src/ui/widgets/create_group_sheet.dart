@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../models/models.dart';
 import '../../state/chat_controller.dart';
 import '../theme/app_theme.dart';
 
@@ -72,9 +71,12 @@ class _CreateGroupSheetState extends State<CreateGroupSheet> {
           listenable: controller,
           builder: (context, _) {
             final me = controller.me;
-            final others = <UserInfo>[
-              for (final user in controller.users)
-                if (user.username != me?.username) user,
+            final online = <String>{
+              for (final user in controller.users) user.username,
+            };
+            final others = <String>[
+              for (final name in [...controller.directory]..sort())
+                if (name != me?.username) name,
             ];
             // The Create button needs a name AND at least one member ticked —
             // say which one is missing instead of leaving it silently dead.
@@ -83,7 +85,7 @@ class _CreateGroupSheetState extends State<CreateGroupSheet> {
               hint = 'Enter a group name';
             } else if (_selected.isEmpty) {
               hint = others.isEmpty
-                  ? 'No other users online to add'
+                  ? 'No other users to add'
                   : 'Select at least one member';
             } else {
               hint = null;
@@ -143,7 +145,7 @@ class _CreateGroupSheetState extends State<CreateGroupSheet> {
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 12),
                       child: Text(
-                        'No other users online',
+                        'No other users',
                         style: TextStyle(
                           fontSize: 13,
                           color: AppColors.textMuted,
@@ -157,11 +159,12 @@ class _CreateGroupSheetState extends State<CreateGroupSheet> {
                         shrinkWrap: true,
                         padding: EdgeInsets.zero,
                         children: [
-                          for (final user in others)
+                          for (final name in others)
                             _MemberTile(
-                              username: user.username,
-                              selected: _selected.contains(user.username),
-                              onChanged: () => _toggleMember(user.username),
+                              username: name,
+                              selected: _selected.contains(name),
+                              isOnline: online.contains(name),
+                              onChanged: () => _toggleMember(name),
                             ),
                         ],
                       ),
@@ -206,11 +209,13 @@ class _MemberTile extends StatelessWidget {
   const _MemberTile({
     required this.username,
     required this.selected,
+    required this.isOnline,
     required this.onChanged,
   });
 
   final String username;
   final bool selected;
+  final bool isOnline;
   final VoidCallback onChanged;
 
   @override
@@ -240,6 +245,23 @@ class _MemberTile extends StatelessWidget {
                 style: const TextStyle(fontSize: 14, color: AppColors.textBody),
               ),
             ),
+            if (isOnline)
+              Container(
+                width: 8,
+                height: 8,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.online,
+                  boxShadow: [
+                    BoxShadow(color: Color(0x5522C55E), blurRadius: 5),
+                  ],
+                ),
+              )
+            else
+              const Text(
+                'offline',
+                style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+              ),
           ],
         ),
       ),

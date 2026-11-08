@@ -8,6 +8,7 @@ import { io as Client } from 'socket.io-client';
 import { AccountStore } from './account-store';
 import { E2eeSession } from './e2ee-session';
 import { GroupStore } from './group-store';
+import { KickVoteStore } from './kick-vote-store';
 import { RateLimiterRegistry } from './rate-limiter';
 import { createServer } from './server';
 import type {
@@ -15,7 +16,9 @@ import type {
   E2eePublicKeyPayload,
   E2eePublicKeyRelay,
   GroupInfo,
+  GroupMemberRemovedPayload,
   GroupMessage,
+  KickTallyPayload,
   LoginResult,
   MessageRejectedPayload,
   PrivateMessage,
@@ -24,7 +27,8 @@ import type {
   UserInfo,
   UserLeftPayload,
 } from './types';
-import { CONSTANTS, EVENTS, SocketId, UserId } from './types';
+import { CONSTANTS, EVENTS, GroupId, SocketId, UserId } from './types';
+import { UserDirectory } from './user-directory';
 import { UserRegistry } from './user-registry';
 
 type TestClient = ReturnType<typeof Client>;
@@ -88,6 +92,12 @@ async function join(
   return { users, groups };
 }
 
+async function joinWithDirectory(client: TestClient, username: string): Promise<readonly string[]> {
+  const directoryPromise = waitEvent<readonly string[]>(client, EVENTS.SERVER.USERS_DIRECTORY);
+  await join(client, username);
+  return directoryPromise;
+}
+
 async function performKeyExchange(
   alice: TestClient,
   bob: TestClient,
@@ -115,8 +125,11 @@ describe('Socket.io Server', () => {
   let engine: Engine;
   let userRegistry: UserRegistry;
   let rateLimiters: RateLimiterRegistry;
+  let db: Database;
   let accountStore: AccountStore;
   let groupStore: GroupStore;
+  let userDirectory: UserDirectory;
+  let kickVoteStore: KickVoteStore;
   let bunServer: ReturnType<typeof Bun.serve>;
   let port: number;
   const clients: TestClient[] = [];
@@ -127,14 +140,19 @@ describe('Socket.io Server', () => {
     io.bind(engine);
     userRegistry = new UserRegistry();
     rateLimiters = new RateLimiterRegistry();
-    accountStore = new AccountStore(new Database(':memory:'));
+    db = new Database(':memory:');
+    accountStore = new AccountStore(db);
     groupStore = new GroupStore();
+    userDirectory = new UserDirectory(db);
+    kickVoteStore = new KickVoteStore();
     createServer(
       io,
       userRegistry,
       rateLimiters,
       accountStore,
       groupStore,
+      userDirectory,
+      kickVoteStore,
       pino({ level: 'silent' }),
     );
 
@@ -162,6 +180,7 @@ describe('Socket.io Server', () => {
     io.close();
     bunServer.stop();
     userRegistry.destroy();
+    kickVoteStore.destroy();
     rateLimiters.destroy();
     accountStore.destroy();
     groupStore.destroy();
@@ -703,5 +722,369 @@ describe('Socket.io Server', () => {
     const msg = await msgPromise;
 
     expect(msg.ciphertext).toBe(ciphertext);
+  });
+
+  test('23: users:directory arrives on join and includes both guests', async () => {
+    const clientA = createClient(port);
+    clients.push(clientA);
+    await connect(clientA);
+    const directoryA = await joinWithDirectory(clientA, 'dirguest1');
+    expect(directoryA).toContain('dirguest1');
+
+    const clientB = createClient(port);
+    clients.push(clientB);
+    await connect(clientB);
+    const directoryB = await joinWithDirectory(clientB, 'dirguest2');
+    expect(directoryB).toContain('dirguest1');
+    expect(directoryB).toContain('dirguest2');
+  });
+
+  test('24: offline member added at create shows up and reappears on rejoin', async () => {
+    const alice = createClient(port);
+    clients.push(alice);
+    await connect(alice);
+    await join(alice, 'offmember1');
+    alice.disconnect();
+
+    const bob = createClient(port);
+    clients.push(bob);
+    await connect(bob);
+    await join(bob, 'offcreator1');
+
+    const groupPromise = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_CREATE, { name: 'Offline Group', members: ['offmember1'] });
+    const group = await groupPromise;
+    expect(group.members.map((m) => m.username)).toContain('offmember1');
+
+    const aliceAgain = createClient(port);
+    clients.push(aliceAgain);
+    await connect(aliceAgain);
+    const { groups } = await join(aliceAgain, 'offmember1');
+    expect(groups.some((g) => g.groupId === group.groupId)).toBe(true);
+  });
+
+  test('25: group:create with unknown member emits error and creates nothing', async () => {
+    const client = createClient(port);
+    clients.push(client);
+    await connect(client);
+    await join(client, 'ghostcreator');
+
+    let createdCount = 0;
+    client.on(EVENTS.SERVER.GROUP_CREATED, () => {
+      createdCount += 1;
+    });
+
+    const errorPromise = waitEvent<{ readonly message: string }>(
+      client,
+      EVENTS.SERVER.GROUP_CREATED_ERROR,
+    );
+    client.emit(EVENTS.CLIENT.GROUP_CREATE, { name: 'Ghost Group', members: ['ghost'] });
+    const error = await errorPromise;
+
+    expect(error.message).toBe('Unknown members: ghost');
+    await delay(200);
+    expect(createdCount).toBe(0);
+  });
+
+  test('26: admin add member flow and guards', async () => {
+    const offlineAlice = createClient(port);
+    clients.push(offlineAlice);
+    await connect(offlineAlice);
+    await join(offlineAlice, 'addalice');
+    offlineAlice.disconnect();
+
+    const bob = createClient(port);
+    const charlie = createClient(port);
+    clients.push(bob, charlie);
+    await Promise.all([connect(bob), connect(charlie)]);
+    await join(bob, 'addbob');
+    await join(charlie, 'addcharlie');
+
+    const groupPromise = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_CREATE, { name: 'Add Group', members: [] });
+    const group = await groupPromise;
+    const groupId = group.groupId;
+
+    const bobGotFirst = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    const charlieGotFirst = waitEvent<GroupInfo>(charlie, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_MEMBER_ADD, { groupId, username: 'addcharlie' });
+    const [bobFirst, charlieFirst] = await Promise.all([bobGotFirst, charlieGotFirst]);
+    expect(bobFirst.members).toHaveLength(2);
+    expect(charlieFirst.members).toHaveLength(2);
+
+    const bobGotOffline = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_MEMBER_ADD, { groupId, username: 'addalice' });
+    const bobOffline = await bobGotOffline;
+    expect(bobOffline.members.map((m) => m.username)).toContain('addalice');
+
+    const nonAdminError = waitEvent<{ readonly message: string }>(charlie, EVENTS.SERVER.ERROR);
+    charlie.emit(EVENTS.CLIENT.GROUP_MEMBER_ADD, { groupId, username: 'addstranger' });
+    expect((await nonAdminError).message).toBe('Only admins can add members');
+
+    const existingError = waitEvent<{ readonly message: string }>(bob, EVENTS.SERVER.ERROR);
+    bob.emit(EVENTS.CLIENT.GROUP_MEMBER_ADD, { groupId, username: 'addcharlie' });
+    expect((await existingError).message).toBe('User is already a member');
+
+    const unknownError = waitEvent<{ readonly message: string }>(bob, EVENTS.SERVER.ERROR);
+    bob.emit(EVENTS.CLIENT.GROUP_MEMBER_ADD, { groupId, username: 'nobody' });
+    expect((await unknownError).message).toBe('Unknown user: nobody');
+
+    const current = groupStore.getGroup(GroupId(groupId));
+    expect(current).toBeDefined();
+    if (current !== undefined) {
+      for (let i = current.members.length; i < CONSTANTS.MAX_GROUP_MEMBERS; i++) {
+        groupStore.addGroupMember(GroupId(groupId), UserId(`filler${i}`), `filler${i}`);
+      }
+    }
+
+    const fullError = waitEvent<{ readonly message: string }>(bob, EVENTS.SERVER.ERROR);
+    bob.emit(EVENTS.CLIENT.GROUP_MEMBER_ADD, { groupId, username: 'addlate' });
+    expect((await fullError).message).toBe('Group is full');
+  });
+
+  test('27: admin remove member flow and guards', async () => {
+    const mate = createClient(port);
+    clients.push(mate);
+    await connect(mate);
+    await join(mate, 'rmmate');
+    mate.disconnect();
+
+    const bob = createClient(port);
+    const charlie = createClient(port);
+    clients.push(bob, charlie);
+    await Promise.all([connect(bob), connect(charlie)]);
+    await join(bob, 'rmob');
+    await join(charlie, 'rmcharlie');
+
+    const groupPromise = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_CREATE, {
+      name: 'Remove Group',
+      members: ['rmcharlie', 'rmmate'],
+    });
+    const group = await groupPromise;
+    const groupId = group.groupId;
+    expect(group.members).toHaveLength(3);
+
+    const nonAdminError = waitEvent<{ readonly message: string }>(charlie, EVENTS.SERVER.ERROR);
+    charlie.emit(EVENTS.CLIENT.GROUP_MEMBER_REMOVE, { groupId, username: 'rmob' });
+    expect((await nonAdminError).message).toBe('Only admins can remove members');
+
+    const removedPromise = waitEvent<GroupMemberRemovedPayload>(
+      charlie,
+      EVENTS.SERVER.GROUP_MEMBER_REMOVED,
+    );
+    const bobGotUpdated = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_MEMBER_REMOVE, { groupId, username: 'rmcharlie' });
+    const [removed, updated] = await Promise.all([removedPromise, bobGotUpdated]);
+    expect(removed).toEqual({ groupId, username: 'rmcharlie', reason: 'removed' });
+    expect(updated.members).toHaveLength(2);
+
+    const creatorError = waitEvent<{ readonly message: string }>(bob, EVENTS.SERVER.ERROR);
+    bob.emit(EVENTS.CLIENT.GROUP_MEMBER_REMOVE, { groupId, username: 'rmob' });
+    expect((await creatorError).message).toBe('The group creator cannot be removed');
+  });
+
+  test('28: kick vote passes at the required threshold', async () => {
+    const alice = createClient(port);
+    const charlie = createClient(port);
+    const bob = createClient(port);
+    clients.push(alice, charlie, bob);
+    await Promise.all([connect(alice), connect(charlie), connect(bob)]);
+    await join(alice, 'votealice');
+    await join(charlie, 'votecharlie');
+    await join(bob, 'votebob');
+
+    const groupPromise = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    const aliceCreated = waitEvent<GroupInfo>(alice, EVENTS.SERVER.GROUP_CREATED);
+    const charlieCreated = waitEvent<GroupInfo>(charlie, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_CREATE, {
+      name: 'Vote Group',
+      members: ['votealice', 'votecharlie'],
+    });
+    const group = await groupPromise;
+    await Promise.all([aliceCreated, charlieCreated]);
+    const groupId = group.groupId;
+    expect(group.members).toHaveLength(3);
+
+    const firstAlice = waitEvent<KickTallyPayload>(alice, EVENTS.SERVER.GROUP_KICK_TALLY);
+    const firstBob = waitEvent<KickTallyPayload>(bob, EVENTS.SERVER.GROUP_KICK_TALLY);
+    const firstCharlie = waitEvent<KickTallyPayload>(charlie, EVENTS.SERVER.GROUP_KICK_TALLY);
+    alice.emit(EVENTS.CLIENT.GROUP_KICK_VOTE, { groupId, username: 'votecharlie' });
+    const [tallyAlice, tallyBob, tallyCharlie] = await Promise.all([
+      firstAlice,
+      firstBob,
+      firstCharlie,
+    ]);
+    for (const tally of [tallyAlice, tallyBob, tallyCharlie]) {
+      expect(tally.groupId).toBe(groupId);
+      expect(tally.username).toBe('votecharlie');
+      expect(tally.votes).toEqual(['votealice']);
+      expect(tally.required).toBe(2);
+      expect(tally.status).toBe('active');
+    }
+
+    const passAlice = waitEvent<KickTallyPayload>(alice, EVENTS.SERVER.GROUP_KICK_TALLY);
+    const passBob = waitEvent<KickTallyPayload>(bob, EVENTS.SERVER.GROUP_KICK_TALLY);
+    const passCharlie = waitEvent<KickTallyPayload>(charlie, EVENTS.SERVER.GROUP_KICK_TALLY);
+    const kickedCharlie = waitEvent<GroupMemberRemovedPayload>(
+      charlie,
+      EVENTS.SERVER.GROUP_MEMBER_REMOVED,
+    );
+    const remainingAlice = waitEvent<GroupInfo>(alice, EVENTS.SERVER.GROUP_CREATED);
+    const remainingBob = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_KICK_VOTE, { groupId, username: 'votecharlie' });
+    const [passedAlice, passedBob, passedCharlie, kicked, leftAlice, leftBob] = await Promise.all([
+      passAlice,
+      passBob,
+      passCharlie,
+      kickedCharlie,
+      remainingAlice,
+      remainingBob,
+    ]);
+    expect(passedAlice.status).toBe('passed');
+    expect(passedBob.status).toBe('passed');
+    expect(passedCharlie.status).toBe('passed');
+    expect(passedCharlie.votes).toEqual(['votealice', 'votebob']);
+    expect(kicked).toEqual({ groupId, username: 'votecharlie', reason: 'kicked' });
+    expect(leftAlice.members).toHaveLength(2);
+    expect(leftBob.members).toHaveLength(2);
+    expect(leftAlice.members.map((m) => m.username)).not.toContain('votecharlie');
+  });
+
+  test('29: kick vote guards reject bad targets and duplicate casts', async () => {
+    const alice = createClient(port);
+    const charlie = createClient(port);
+    const dave = createClient(port);
+    const bob = createClient(port);
+    clients.push(alice, charlie, dave, bob);
+    await Promise.all([connect(alice), connect(charlie), connect(dave), connect(bob)]);
+    await join(alice, 'guardalice');
+    await join(charlie, 'guardcharlie');
+    await join(dave, 'guarddave');
+    await join(bob, 'guardbob');
+
+    const groupPromise = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_CREATE, {
+      name: 'Guard Group',
+      members: ['guardalice', 'guardcharlie', 'guarddave'],
+    });
+    const group = await groupPromise;
+    const groupId = group.groupId;
+
+    const selfError = waitEvent<{ readonly message: string }>(alice, EVENTS.SERVER.ERROR);
+    alice.emit(EVENTS.CLIENT.GROUP_KICK_VOTE, { groupId, username: 'guardalice' });
+    expect((await selfError).message).toBe('You cannot vote to kick yourself');
+
+    const creatorError = waitEvent<{ readonly message: string }>(alice, EVENTS.SERVER.ERROR);
+    alice.emit(EVENTS.CLIENT.GROUP_KICK_VOTE, { groupId, username: 'guardbob' });
+    expect((await creatorError).message).toBe('The group creator cannot be kicked');
+
+    const startedAlice = waitEvent<KickTallyPayload>(alice, EVENTS.SERVER.GROUP_KICK_TALLY);
+    const startedCharlie = waitEvent<KickTallyPayload>(charlie, EVENTS.SERVER.GROUP_KICK_TALLY);
+    alice.emit(EVENTS.CLIENT.GROUP_KICK_VOTE, { groupId, username: 'guardcharlie' });
+    const [started1, started2] = await Promise.all([startedAlice, startedCharlie]);
+    expect(started1.status).toBe('active');
+    expect(started1.votes).toEqual(['guardalice']);
+    expect(started2.votes).toEqual(['guardalice']);
+
+    const busyError = waitEvent<{ readonly message: string }>(alice, EVENTS.SERVER.ERROR);
+    alice.emit(EVENTS.CLIENT.GROUP_KICK_VOTE, { groupId, username: 'guarddave' });
+    expect((await busyError).message).toBe('A vote is already in progress');
+
+    alice.emit(EVENTS.CLIENT.GROUP_KICK_VOTE, { groupId, username: 'guardcharlie' });
+    await delay(200);
+    expect(kickVoteStore.getTally(GroupId(groupId))?.votes).toEqual(['guardalice']);
+  });
+
+  test('30: join snapshot order is active_groups, users:directory, group:kick:tally', async () => {
+    const daveFirst = createClient(port);
+    clients.push(daveFirst);
+    await connect(daveFirst);
+    await join(daveFirst, 'snapdave');
+    daveFirst.disconnect();
+
+    const alice = createClient(port);
+    const charlie = createClient(port);
+    const bob = createClient(port);
+    clients.push(alice, charlie, bob);
+    await Promise.all([connect(alice), connect(charlie), connect(bob)]);
+    await join(alice, 'snapalice');
+    await join(charlie, 'snapcharlie');
+    await join(bob, 'snapbob');
+
+    const groupPromise = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_CREATE, {
+      name: 'Snapshot Group',
+      members: ['snapalice', 'snapcharlie', 'snapdave'],
+    });
+    const group = await groupPromise;
+    const groupId = group.groupId;
+
+    const voteAlice = waitEvent<KickTallyPayload>(alice, EVENTS.SERVER.GROUP_KICK_TALLY);
+    alice.emit(EVENTS.CLIENT.GROUP_KICK_VOTE, { groupId, username: 'snapcharlie' });
+    await voteAlice;
+
+    const dave = createClient(port);
+    clients.push(dave);
+    await connect(dave);
+
+    const order: string[] = [];
+    let receivedTally: KickTallyPayload | undefined;
+    const snapshotDone = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('snapshot timeout')), 5000);
+      let seen = 0;
+      const tick = (): void => {
+        seen += 1;
+        if (seen === 3) {
+          clearTimeout(timer);
+          resolve();
+        }
+      };
+      dave.once(EVENTS.SERVER.ACTIVE_GROUPS, () => {
+        order.push('active_groups');
+        tick();
+      });
+      dave.once(EVENTS.SERVER.USERS_DIRECTORY, () => {
+        order.push('users:directory');
+        tick();
+      });
+      dave.once(EVENTS.SERVER.GROUP_KICK_TALLY, (tally: KickTallyPayload) => {
+        receivedTally = tally;
+        order.push('group:kick:tally');
+        tick();
+      });
+    });
+
+    dave.emit(EVENTS.CLIENT.USER_JOIN, { username: 'snapdave' });
+    await snapshotDone;
+
+    expect(order).toEqual(['active_groups', 'users:directory', 'group:kick:tally']);
+    expect(receivedTally?.groupId).toBe(groupId);
+    expect(receivedTally?.status).toBe('active');
+    expect(receivedTally?.votes).toEqual(['snapalice']);
+  });
+
+  test('31: rapid group:member:add emits hit the rate limit', async () => {
+    const bob = createClient(port);
+    clients.push(bob);
+    await connect(bob);
+    await join(bob, 'rlbob');
+
+    const groupPromise = waitEvent<GroupInfo>(bob, EVENTS.SERVER.GROUP_CREATED);
+    bob.emit(EVENTS.CLIENT.GROUP_CREATE, { name: 'Rate Group', members: [] });
+    const group = await groupPromise;
+
+    const errors: string[] = [];
+    bob.on(EVENTS.SERVER.ERROR, (payload: { readonly message: string }) => {
+      errors.push(payload.message);
+    });
+    for (let i = 0; i < 15; i++) {
+      bob.emit(EVENTS.CLIENT.GROUP_MEMBER_ADD, {
+        groupId: group.groupId,
+        username: 'rltarget',
+      });
+    }
+    await delay(400);
+    expect(errors).toContain('Rate limit exceeded');
   });
 });

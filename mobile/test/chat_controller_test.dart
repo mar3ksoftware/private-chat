@@ -107,6 +107,18 @@ class FakeSocketService implements SocketService {
   void sendGroupMessage(GroupEncryptedPayload payload) =>
       _record(ChatEvents.groupMessageSend, payload);
 
+  @override
+  void sendGroupMemberAdd(GroupTargetPayload payload) =>
+      _record(ChatEvents.groupMemberAdd, payload);
+
+  @override
+  void sendGroupMemberRemove(GroupTargetPayload payload) =>
+      _record(ChatEvents.groupMemberRemove, payload);
+
+  @override
+  void sendGroupKickVote(GroupTargetPayload payload) =>
+      _record(ChatEvents.groupKickVote, payload);
+
   // ── Inbound ────────────────────────────────────────────────────────────
 
   @override
@@ -219,6 +231,27 @@ class FakeSocketService implements SocketService {
   Unsubscribe onGroupMessageDeliveryFailed(void Function(GroupErrorPayload payload) handler) {
     return _register(ChatEvents.groupMessageDeliveryFailed, (data) {
       handler(data! as GroupErrorPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onUsersDirectory(void Function(List<String> usernames) handler) {
+    return _register(ChatEvents.usersDirectory, (payload) {
+      handler(payload! as List<String>);
+    });
+  }
+
+  @override
+  Unsubscribe onGroupMemberRemoved(void Function(GroupMemberRemovedPayload payload) handler) {
+    return _register(ChatEvents.groupMemberRemoved, (data) {
+      handler(data! as GroupMemberRemovedPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onGroupKickTally(void Function(KickTally tally) handler) {
+    return _register(ChatEvents.groupKickTally, (data) {
+      handler(data! as KickTally);
     });
   }
 
@@ -900,6 +933,178 @@ void main() {
       expect(fake.disconnectCalled, isTrue);
       // A fresh E2eeSession replaced the old one.
       expect(controller.e2ee.hasSharedKey('bob'), isFalse);
+    });
+  });
+
+  group('directory and kick votes', () {
+    const team = GroupInfo(
+      groupId: 'g-team',
+      name: 'Team',
+      members: <GroupMember>[
+        GroupMember(userId: 'u-alice', username: 'alice', isAdmin: true),
+        GroupMember(userId: 'u-bob', username: 'bob', isAdmin: false),
+        GroupMember(userId: 'u-me', username: 'me', isAdmin: false),
+      ],
+      createdBy: 'u-alice',
+      createdAt: 1000,
+    );
+
+    KickTally tally({List<String> votes = const <String>['alice']}) {
+      return KickTally(
+        groupId: 'g-team',
+        username: 'bob',
+        votes: votes,
+        required: 2,
+        status: 'active',
+        expiresAt: 1700000000000,
+      );
+    }
+
+    test('users:directory replaces the snapshot', () {
+      fake.fire(ChatEvents.usersDirectory, <String>['alice', 'bob']);
+      expect(controller.directory, <String>['alice', 'bob']);
+
+      fake.fire(ChatEvents.usersDirectory, <String>['carol']);
+      expect(controller.directory, <String>['carol']);
+    });
+
+    test('user:joined appends to the directory only when missing', () {
+      fake.fire(ChatEvents.usersDirectory, <String>['alice']);
+      fake.fire(ChatEvents.userJoined, bobInfo);
+      expect(controller.directory, <String>['alice', 'bob']);
+
+      // A rejoining peer must not create a second entry.
+      fake.fire(ChatEvents.userJoined, bobInfo);
+      expect(controller.directory, <String>['alice', 'bob']);
+    });
+
+    test('active_groups clears tallies and a later tally repopulates', () {
+      fake.fire(ChatEvents.groupKickTally, tally());
+      expect(controller.kickTallyFor('g-team'), isNotNull);
+
+      fake.fire(ChatEvents.activeGroups, <GroupInfo>[]);
+      expect(controller.kickTallyFor('g-team'), isNull);
+
+      fake.fire(
+        ChatEvents.groupKickTally,
+        tally(votes: <String>['alice', 'bob']),
+      );
+      expect(controller.kickTallyFor('g-team')?.votes, <String>[
+        'alice',
+        'bob',
+      ]);
+    });
+
+    test('group:member:removed for me drops the group, selection and tally', () {
+      signInAs('u-me', 'me');
+      fake.fire(ChatEvents.activeGroups, <GroupInfo>[team]);
+      fake.fire(ChatEvents.groupKickTally, tally());
+      controller.selectGroup('g-team');
+
+      fake.fire(
+        ChatEvents.groupMemberRemoved,
+        const GroupMemberRemovedPayload(
+          groupId: 'g-team',
+          username: 'me',
+          reason: 'removed',
+        ),
+      );
+      expect(controller.groups, isEmpty);
+      expect(controller.selectedGroup, isNull);
+      expect(controller.kickTallyFor('g-team'), isNull);
+      expect(controller.error, 'You were removed from Team.');
+
+      // A group we no longer know falls back to the generic name.
+      fake.fire(
+        ChatEvents.groupMemberRemoved,
+        const GroupMemberRemovedPayload(
+          groupId: 'g-unknown',
+          username: 'me',
+          reason: 'kicked',
+        ),
+      );
+      expect(controller.error, 'You were voted out of the group.');
+    });
+
+    test('group:member:removed for someone else keeps my group and stays quiet', () {
+      signInAs('u-me', 'me');
+      fake.fire(ChatEvents.activeGroups, <GroupInfo>[team]);
+      controller.selectGroup('g-team');
+
+      fake.fire(
+        ChatEvents.groupMemberRemoved,
+        const GroupMemberRemovedPayload(
+          groupId: 'g-team',
+          username: 'alice',
+          reason: 'kicked',
+        ),
+      );
+      expect(controller.groups, <GroupInfo>[team]);
+      expect(controller.selectedGroup, 'g-team');
+      expect(controller.error, isNull);
+    });
+
+    test('group:kick:tally upserts per group id', () {
+      const other = KickTally(
+        groupId: 'g-other',
+        username: 'carol',
+        votes: <String>[],
+        required: 2,
+        status: 'active',
+        expiresAt: 1700000000000,
+      );
+      fake.fire(ChatEvents.groupKickTally, tally());
+      fake.fire(ChatEvents.groupKickTally, other);
+      expect(controller.kickTallyFor('g-team')?.votes, <String>['alice']);
+      expect(controller.kickTallyFor('g-other'), other);
+
+      fake.fire(
+        ChatEvents.groupKickTally,
+        tally(votes: <String>['alice', 'bob']),
+      );
+      expect(controller.kickTallyFor('g-team')?.votes, <String>[
+        'alice',
+        'bob',
+      ]);
+      expect(controller.kickTallyFor('g-other'), other);
+    });
+
+    test('membership methods emit the exact wire events', () {
+      controller.addMember('g-team', 'alice');
+      controller.removeMember('g-team', 'bob');
+      controller.kickVote('g-team', 'carol');
+
+      expect(
+        fake.payloadsOf(ChatEvents.groupMemberAdd).single,
+        const GroupTargetPayload(groupId: 'g-team', username: 'alice'),
+      );
+      expect(
+        fake.payloadsOf(ChatEvents.groupMemberRemove).single,
+        const GroupTargetPayload(groupId: 'g-team', username: 'bob'),
+      );
+      expect(
+        fake.payloadsOf(ChatEvents.groupKickVote).single,
+        const GroupTargetPayload(groupId: 'g-team', username: 'carol'),
+      );
+
+      expect(ChatEvents.groupMemberAdd, 'group:member:add');
+      expect(ChatEvents.groupMemberRemove, 'group:member:remove');
+      expect(ChatEvents.groupKickVote, 'group:kick:vote');
+      expect(ChatEvents.usersDirectory, 'users:directory');
+      expect(ChatEvents.groupMemberRemoved, 'group:member:removed');
+      expect(ChatEvents.groupKickTally, 'group:kick:tally');
+    });
+
+    test('logout clears the directory and the kick tallies', () {
+      fake.fire(ChatEvents.usersDirectory, <String>['alice', 'bob']);
+      fake.fire(ChatEvents.groupKickTally, tally());
+      expect(controller.directory, isNotEmpty);
+      expect(controller.kickTallyFor('g-team'), isNotNull);
+
+      controller.logout();
+
+      expect(controller.directory, isEmpty);
+      expect(controller.kickTallyFor('g-team'), isNull);
     });
   });
 }

@@ -10,7 +10,7 @@ type CreateGroupModalProps = {
 };
 
 export function CreateGroupModal({ isOpen, onClose }: CreateGroupModalProps) {
-  const { users, user, createGroup } = useChat();
+  const { directory, users, user, createGroup } = useChat();
   const [name, setName] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -44,7 +44,10 @@ export function CreateGroupModal({ isOpen, onClose }: CreateGroupModalProps) {
 
   if (!isOpen) return null;
 
-  const otherUsers = users.filter((u) => u.username !== user?.username);
+  const otherUsers = directory
+    .filter((u) => u !== user?.username)
+    .slice()
+    .sort();
 
   // The Sidebar is a `backdrop-filter` element, which makes it the containing
   // block for `position: fixed` descendants — portal to <body> so the dialog
@@ -70,20 +73,29 @@ export function CreateGroupModal({ isOpen, onClose }: CreateGroupModalProps) {
         />
         <div className="max-h-48 overflow-y-auto mb-4">
           {otherUsers.length === 0 ? (
-            <p className="text-sm text-zinc-500">No other users online</p>
+            <p className="text-sm text-zinc-500">No other users</p>
           ) : (
             otherUsers.map((u) => (
               <label
-                key={u.userId}
+                key={u}
                 className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-zinc-800/50 cursor-pointer"
               >
                 <input
                   type="checkbox"
-                  checked={selected.has(u.username)}
-                  onChange={() => toggleMember(u.username)}
+                  checked={selected.has(u)}
+                  onChange={() => toggleMember(u)}
                   className="rounded border-zinc-600 bg-zinc-800 text-indigo-500 focus:ring-indigo-500/50"
                 />
-                <span className="text-sm text-zinc-300">{u.username}</span>
+                <span className="text-sm text-zinc-300">{u}</span>
+                {users.some((c) => c.username === u) ? (
+                  <span
+                    role="img"
+                    aria-label="Online"
+                    className="ml-auto h-2 w-2 shrink-0 rounded-full bg-emerald-500"
+                  />
+                ) : (
+                  <span className="ml-auto text-xs text-zinc-500">offline</span>
+                )}
               </label>
             ))
           )}

@@ -105,6 +105,18 @@ class FakeSocketService implements SocketService {
   void sendGroupMessage(GroupEncryptedPayload payload) =>
       _record(ChatEvents.groupMessageSend, payload);
 
+  @override
+  void sendGroupMemberAdd(GroupTargetPayload payload) =>
+      _record(ChatEvents.groupMemberAdd, payload);
+
+  @override
+  void sendGroupMemberRemove(GroupTargetPayload payload) =>
+      _record(ChatEvents.groupMemberRemove, payload);
+
+  @override
+  void sendGroupKickVote(GroupTargetPayload payload) =>
+      _record(ChatEvents.groupKickVote, payload);
+
   // ── Inbound ────────────────────────────────────────────────────────────
 
   @override
@@ -220,6 +232,27 @@ class FakeSocketService implements SocketService {
     });
   }
 
+  @override
+  Unsubscribe onUsersDirectory(void Function(List<String> usernames) handler) {
+    return _register(ChatEvents.usersDirectory, (payload) {
+      handler(payload! as List<String>);
+    });
+  }
+
+  @override
+  Unsubscribe onGroupMemberRemoved(void Function(GroupMemberRemovedPayload payload) handler) {
+    return _register(ChatEvents.groupMemberRemoved, (data) {
+      handler(data! as GroupMemberRemovedPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onGroupKickTally(void Function(KickTally tally) handler) {
+    return _register(ChatEvents.groupKickTally, (data) {
+      handler(data! as KickTally);
+    });
+  }
+
   // ── Connection lifecycle listeners ─────────────────────────────────────
 
   @override
@@ -332,9 +365,13 @@ void signIn(FakeSocketService fake, {String username = 'me', String userId = 'u-
   );
 }
 
-/// Publishes the roster.
+/// Publishes the roster (and the directory snapshot that backs the
+/// group-create picker).
 void setUsers(FakeSocketService fake, List<UserInfo> users) {
   fake.fire(ChatEvents.activeUsers, users);
+  fake.fire(ChatEvents.usersDirectory, <String>[
+    for (final user in users) user.username,
+  ]);
 }
 
 void setGroups(FakeSocketService fake, List<GroupInfo> groups) {

@@ -144,6 +144,26 @@ export type GroupMessage = {
   readonly timestamp: number;
 };
 
+export type GroupTargetPayload = {
+  readonly groupId: string;
+  readonly username: string;
+};
+
+export type GroupMemberRemovedPayload = {
+  readonly groupId: string;
+  readonly username: string;
+  readonly reason: 'removed' | 'kicked';
+};
+
+export type KickTallyPayload = {
+  readonly groupId: string;
+  readonly username: string;
+  readonly votes: readonly string[];
+  readonly required: number;
+  readonly status: 'active' | 'passed' | 'expired';
+  readonly expiresAt: number;
+};
+
 // ── Discriminated unions ──────────────────────────────────────────────
 
 export type ValidationResult<T> =
@@ -204,6 +224,7 @@ export const CONSTANTS = {
   MAX_PIN_LENGTH: 6,
   MAX_GROUP_NAME_LENGTH: 50,
   MAX_GROUP_MEMBERS: 50,
+  KICK_VOTE_TTL_MS: 60_000,
 } as const;
 
 // ── Event name map ────────────────────────────────────────────────────
@@ -216,6 +237,9 @@ export const EVENTS = {
     USER_REGISTER: 'user:register',
     USER_LOGIN: 'user:login',
     GROUP_CREATE: 'group:create',
+    GROUP_MEMBER_ADD: 'group:member:add',
+    GROUP_MEMBER_REMOVE: 'group:member:remove',
+    GROUP_KICK_VOTE: 'group:kick:vote',
     GROUP_MESSAGE_SEND: 'group:message:send',
   },
   SERVER: {
@@ -236,6 +260,9 @@ export const EVENTS = {
     GROUP_CREATED_ERROR: 'group:created_error',
     GROUP_MESSAGE: 'group:message',
     GROUP_MESSAGE_DELIVERY_FAILED: 'group:message_delivery_failed',
+    USERS_DIRECTORY: 'users:directory',
+    GROUP_MEMBER_REMOVED: 'group:member:removed',
+    GROUP_KICK_TALLY: 'group:kick:tally',
   },
 } as const;
 
@@ -267,6 +294,9 @@ export type ServerToClientEvents = {
   readonly [EVENTS.SERVER.GROUP_CREATED_ERROR]: (payload: GroupErrorPayload) => void;
   readonly [EVENTS.SERVER.GROUP_MESSAGE]: (message: GroupMessage) => void;
   readonly [EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED]: (payload: GroupErrorPayload) => void;
+  readonly [EVENTS.SERVER.USERS_DIRECTORY]: (usernames: readonly string[]) => void;
+  readonly [EVENTS.SERVER.GROUP_MEMBER_REMOVED]: (payload: GroupMemberRemovedPayload) => void;
+  readonly [EVENTS.SERVER.GROUP_KICK_TALLY]: (payload: KickTallyPayload) => void;
 };
 
 export type ClientToServerEvents = {
@@ -280,6 +310,9 @@ export type ClientToServerEvents = {
     readonly members: readonly string[];
   }) => void;
   readonly [EVENTS.CLIENT.GROUP_MESSAGE_SEND]: (payload: GroupEncryptedPayload) => void;
+  readonly [EVENTS.CLIENT.GROUP_MEMBER_ADD]: (payload: GroupTargetPayload) => void;
+  readonly [EVENTS.CLIENT.GROUP_MEMBER_REMOVE]: (payload: GroupTargetPayload) => void;
+  readonly [EVENTS.CLIENT.GROUP_KICK_VOTE]: (payload: GroupTargetPayload) => void;
 };
 
 // ── Utility ───────────────────────────────────────────────────────────

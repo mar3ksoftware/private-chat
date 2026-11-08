@@ -65,6 +65,11 @@ const groupMessagePayloadSchema = z.strictObject({
     .max(CONSTANTS.MAX_GROUP_CIPHERTEXTS),
 });
 
+const groupTargetPayloadSchema = z.strictObject({
+  groupId: z.string().min(1),
+  username: usernameSchema,
+});
+
 function toValidationResult<T>(schema: z.ZodType<T>, input: unknown): ValidationResult<T> {
   const result = schema.safeParse(input);
   if (result.success) {
@@ -122,4 +127,10 @@ export function validateGroupMessagePayload(input: unknown): ValidationResult<{
   }[];
 }> {
   return toValidationResult(groupMessagePayloadSchema, input);
+}
+
+export function validateGroupTargetPayload(
+  input: unknown,
+): ValidationResult<{ readonly groupId: string; readonly username: string }> {
+  return toValidationResult(groupTargetPayloadSchema, input);
 }

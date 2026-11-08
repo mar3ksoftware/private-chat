@@ -64,6 +64,15 @@ abstract interface class SocketService {
   /// `group:message:send` — send an encrypted group message.
   void sendGroupMessage(GroupEncryptedPayload payload);
 
+  /// `group:member:add` — add a member to a group (admin only).
+  void sendGroupMemberAdd(GroupTargetPayload payload);
+
+  /// `group:member:remove` — remove a member from a group (admin only).
+  void sendGroupMemberRemove(GroupTargetPayload payload);
+
+  /// `group:kick:vote` — cast a vote to kick a member.
+  void sendGroupKickVote(GroupTargetPayload payload);
+
   // ── Inbound: server -> client ──────────────────────────────────────────
 
   /// `user:joined` — a user (possibly us) joined; broadcast to everyone.
@@ -116,6 +125,15 @@ abstract interface class SocketService {
 
   /// `group:message_delivery_failed` — a group message was rejected.
   Unsubscribe onGroupMessageDeliveryFailed(void Function(GroupErrorPayload payload) handler);
+
+  /// `users:directory` — every known username, sent as a snapshot on join.
+  Unsubscribe onUsersDirectory(void Function(List<String> usernames) handler);
+
+  /// `group:member:removed` — we were removed from a group.
+  Unsubscribe onGroupMemberRemoved(void Function(GroupMemberRemovedPayload payload) handler);
+
+  /// `group:kick:tally` — the current vote-kick tally for a group.
+  Unsubscribe onGroupKickTally(void Function(KickTally tally) handler);
 
   // ── Connection lifecycle listeners ─────────────────────────────────────
 
@@ -200,6 +218,21 @@ class IoSocketService implements SocketService {
   @override
   void sendGroupMessage(GroupEncryptedPayload payload) {
     _socket.emit(ChatEvents.groupMessageSend, payload.toJson());
+  }
+
+  @override
+  void sendGroupMemberAdd(GroupTargetPayload payload) {
+    _socket.emit(ChatEvents.groupMemberAdd, payload.toJson());
+  }
+
+  @override
+  void sendGroupMemberRemove(GroupTargetPayload payload) {
+    _socket.emit(ChatEvents.groupMemberRemove, payload.toJson());
+  }
+
+  @override
+  void sendGroupKickVote(GroupTargetPayload payload) {
+    _socket.emit(ChatEvents.groupKickVote, payload.toJson());
   }
 
   // ── Inbound ────────────────────────────────────────────────────────────
@@ -320,6 +353,29 @@ class IoSocketService implements SocketService {
   Unsubscribe onGroupMessageDeliveryFailed(void Function(GroupErrorPayload payload) handler) {
     return _on(ChatEvents.groupMessageDeliveryFailed, (data) {
       handler(GroupErrorPayload.fromJson(asJsonMap(data)));
+    });
+  }
+
+  @override
+  Unsubscribe onUsersDirectory(void Function(List<String> usernames) handler) {
+    return _on(ChatEvents.usersDirectory, (payload) {
+      handler(<String>[
+        for (final entry in readList(payload)) readString(entry),
+      ]);
+    });
+  }
+
+  @override
+  Unsubscribe onGroupMemberRemoved(void Function(GroupMemberRemovedPayload payload) handler) {
+    return _on(ChatEvents.groupMemberRemoved, (data) {
+      handler(GroupMemberRemovedPayload.fromJson(asJsonMap(data)));
+    });
+  }
+
+  @override
+  Unsubscribe onGroupKickTally(void Function(KickTally tally) handler) {
+    return _on(ChatEvents.groupKickTally, (data) {
+      handler(KickTally.fromJson(asJsonMap(data)));
     });
   }
 

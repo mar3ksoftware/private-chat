@@ -89,6 +89,26 @@ export type DecryptedGroupMessage = {
   readonly decryptionFailed: boolean;
 };
 
+export type GroupTargetPayload = {
+  readonly groupId: string;
+  readonly username: string;
+};
+
+export type GroupMemberRemovedPayload = {
+  readonly groupId: string;
+  readonly username: string;
+  readonly reason: 'removed' | 'kicked';
+};
+
+export type KickTally = {
+  readonly groupId: string;
+  readonly username: string;
+  readonly votes: readonly string[];
+  readonly required: number;
+  readonly status: 'active' | 'passed' | 'expired';
+  readonly expiresAt: number;
+};
+
 // ── Auth payloads ──
 
 export type RegisterPayload = {
@@ -152,6 +172,9 @@ export type ClientToServerEvents = {
   'e2ee:public_key': (payload: E2eePublicKeyPayload) => void;
   'group:create': (payload: { readonly name: string; readonly members: readonly string[] }) => void;
   'group:message:send': (payload: GroupEncryptedPayload) => void;
+  'group:member:add': (payload: GroupTargetPayload) => void;
+  'group:member:remove': (payload: GroupTargetPayload) => void;
+  'group:kick:vote': (payload: GroupTargetPayload) => void;
 };
 
 export type ServerToClientEvents = {
@@ -172,6 +195,9 @@ export type ServerToClientEvents = {
   'group:created_error': (payload: { readonly message: string }) => void;
   'group:message': (payload: GroupMessage) => void;
   'group:message_delivery_failed': (payload: { readonly message: string }) => void;
+  'users:directory': (usernames: readonly string[]) => void;
+  'group:member:removed': (payload: GroupMemberRemovedPayload) => void;
+  'group:kick:tally': (payload: KickTally) => void;
 };
 
 // ── Event name map ──
@@ -185,6 +211,9 @@ export const EVENTS = {
     E2EE_PUBLIC_KEY: 'e2ee:public_key',
     GROUP_CREATE: 'group:create',
     GROUP_MESSAGE_SEND: 'group:message:send',
+    GROUP_MEMBER_ADD: 'group:member:add',
+    GROUP_MEMBER_REMOVE: 'group:member:remove',
+    GROUP_KICK_VOTE: 'group:kick:vote',
   },
   SERVER: {
     USER_JOINED: 'user:joined',
@@ -204,5 +233,8 @@ export const EVENTS = {
     GROUP_CREATED_ERROR: 'group:created_error',
     GROUP_MESSAGE: 'group:message',
     GROUP_MESSAGE_DELIVERY_FAILED: 'group:message_delivery_failed',
+    USERS_DIRECTORY: 'users:directory',
+    GROUP_MEMBER_REMOVED: 'group:member:removed',
+    GROUP_KICK_TALLY: 'group:kick:tally',
   },
 } as const;

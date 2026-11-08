@@ -18,10 +18,13 @@ Private Chat/
 | Modul | Opis |
 |---|---|
 | `src/index.ts` | Punkt wejscia Bun.serve, health check, graceful shutdown |
-| `src/server.ts` | Obsluga zdarzen Socket.io (join, register, login, message, e2ee relay, disconnect) |
+| `src/server.ts` | Obsluga zdarzen Socket.io (join, register, login, message, e2ee relay, grupy, czlonkowstwo, vote-kick, disconnect) |
 | `src/types.ts` | Typy brandowane, mapy zdarzen, typy payloadow |
 | `src/config.ts` | Konfiguracja oparta na zmiennych srodowiskowych |
 | `src/account-store.ts` | Trwalosc SQLite przez `bun:sqlite`, bcrypt przez `Bun.password` |
+| `src/user-directory.ts` | Union zarejestrowanych kont i nazw gosci (offline czlonkowie grup) |
+| `src/group-store.ts` | Grupy i czlonkostwo w pamieci |
+| `src/kick-vote-store.ts` | Jedno aktywne glosowanie na wyrzucenie per grupa, TTL 60s |
 | `src/user-registry.ts` | Sledzenie aktywnych uzytkownikow w pamieci, TTL 30s przy rozlaczeniu |
 | `src/rate-limiter.ts` | Ograniczanie tempa - token bucket (10 zapytan/s na socket) |
 | `src/validators.ts` | walidacja Zod dla wszystkich payloadow |
@@ -104,6 +107,8 @@ Plik `.env` w katalogu `backend/` zawiera wszystkie domyslne wartosci. Bun wczyt
 | `PING_INTERVAL` | `25000` | Interwal ping Socket.io (ms) |
 | `PING_TIMEOUT` | `20000` | Timeout ping Socket.io (ms) |
 | `DB_PATH` | `chat.db` | Sciezka do pliku bazy SQLite |
+| `TLS_CERT_FILE` | _(nie ustawione)_ | Sciezka do certyfikatu TLS (PEM). Musi byc ustawiona razem z `TLS_KEY_FILE` |
+| `TLS_KEY_FILE` | _(nie ustawione)_ | Sciezka do klucza prywatnego TLS (PEM). Musi byc ustawiona razem z `TLS_CERT_FILE` |
 
 ### Frontend
 
@@ -132,16 +137,68 @@ Klient A                      Serwer                      Klient B
    |                            |      (tylko szyfr)        |
 ```
 
+## TLS / HTTPS
+
+Certyfikaty sa zawsze przygotowywane zewnetrznie (certbot, Twoja CA, `openssl`) — aplikacja nie zawiera automatyzacji ACME/Let's Encrypt. Do wyboru sa dwie opcje:
+
+**Opcja A — backend konczy TLS.** Ustaw obie zmienne, a Bun bedzie serwowal `https`/`wss` bezposrednio na `PORT` (obie bez zmian = domyslne czyste `http`):
+
+```bash
+TLS_CERT_FILE=/etc/private-chat/fullchain.pem TLS_KEY_FILE=/etc/private-chat/privkey.pem bun run src/index.ts
+```
+
+Obie zmienne musza byc ustawione razem; ustawienie tylko jednej konczy sie bledem `TLS_CERT_FILE and TLS_KEY_FILE must be set together`.
+
+**Opcja B — TLS konczy reverse proxy.** Backend zostaje na czystym `http` za nginx (patrz przyklad produkcyjny ponizej, `listen 443 ssl`). W backendzie nic sie nie zmienia.
+
+Klienci nie wymagaja specjalnej konfiguracji: `socket.io-client` sam wywodzi `wss:` z `https:`, a klient mobilny akceptuje adresy serwera `https://` bez zmian. Skieruj ich na https origin:
+
+```bash
+# Build frontendu
+VITE_API_URL=https://chat.example.com npm run build
+```
+
+Ustaw `CORS_ORIGINS` na https origin (np. `https://chat.example.com`). `*` tez dziala, ale nie jest zalecane na produkcji.
+
+Reczny test dymny:
+
+```bash
+cd backend
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 2 -nodes -subj "/CN=localhost"
+TLS_CERT_FILE=cert.pem TLS_KEY_FILE=key.pem bun run src/index.ts
+curl -k https://localhost:3000/health
+```
+
+Po wyczyszczeniu zmiennych serwer nadal musi odpowiadac na `http://localhost:3000/health`.
+
 ## Funkcje
 
 - **Szyfrowanie end-to-end** - ECDH + AES-GCM-256, serwer nigdy nie widzi tekstu jawnego
 - **System kont** - Rejestracja/login z haslem (bcrypt), opcjonalny PIN
 - **Tryb goscia** - Dolacz bez konta (tymczasowa tozsamosc)
+- **Offline czlonkowie grup** - Uzytkownikow mozna dodawac do grup, nawet gdy sa offline
+- **Vote-kick** - Czlonkowie moga glosowac nad wyrzuceniem czlonka (tworca jest odporny)
 - **Trwalosc SQLite** - Konta przetrwaja restart serwera, wiadomosci czatu nie
 - **Zero trwalosci czatu** - Brak localStorage, cookies ani serwera do przechowywania wiadomosci
 - **Ograniczanie tempa** - Token bucket na socket (10 zapytan/s)
 - **Responsywny interfejs** - Podzielony panel na desktopie, stos na urzadzeniach mobilnych
 - **Ciemny glassmorphism** - Ciemny motyw zinc z akcentem indigo
+
+## Dane i prywatnosc
+
+Co serwer przechowuje:
+
+- **Konta** - nazwa uzytkownika, hash hasla (bcrypt), opcjonalny hash PIN (SQLite).
+- **Nazwy gosci** - nazwa goscia, ktory kiedys dolaczyl, zostaje w malej tabeli katalogowej, zeby mozna bylo dodac te osobe do grupy pozniej, takze gdy jest offline. Dla gosci nie sa przechowywane zadne wiadomosci, dane logowania ani historia obecnosci.
+
+Czego serwer nigdy nie przechowuje: tresci wiadomosci (E2EE, tylko relaya) oraz stanu sesji poza rejestrem w pamieci.
+
+Znane ograniczenia, zaakceptowane przez projekt:
+
+- **Serwer widzi metadane.** Nazwy uzytkownikow, czlonkostwo w grupach, obecnosc i klucze publiczne e2ee sa widoczne dla serwera, bo to on jest relayem. TLS chroni je tylko przed obserwatorami sieci — nie przed operatorem serwera.
+- **Brak kolejki wiadomosci offline.** Wiadomosci adresowane do offline uzytkownika nie sa buforowane; nadawca dostaje blad dostarczenia, dokladnie jak wczesniej.
+- **Nieaktualna tozsamosc goscia.** Jesli nazwa goscia zostanie pozniej zarejestrowana jako konto, wiersze grup utworzone, gdy byla gosciem, zachowuja stary guest userId i nie sa migrowane. Nowe lookupy rozwiazuja juz na konto.
+- **Brak automatyzacji certyfikatow.** Certyfikaty TLS trzeba odnawiac zewnetrznie.
 
 ## Stack technologiczny
 
@@ -187,10 +244,21 @@ npm run build
 
 ### 2. Skonfiguruj reverse proxy (przyklad nginx)
 
+TLS konczy sie w nginx; backend zostaje na czystym `http` (opcja B TLS). Certyfikaty sa przygotowywane zewnetrznie (np. certbot).
+
 ```nginx
 server {
     listen 80;
     server_name chat.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name chat.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/chat.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/chat.example.com/privkey.pem;
 
     # Serwuj pliki statyczne frontendu
     location / {
@@ -212,6 +280,8 @@ server {
     }
 }
 ```
+
+Jesli to backend konczy TLS (opcja A), zmien `proxy_pass` na `https://127.0.0.1:3000`.
 
 ### 3. Uruchom backend
 
@@ -238,6 +308,9 @@ Restart=on-failure
 Environment=PORT=3000
 Environment=LOG_LEVEL=warn
 Environment=DB_PATH=/var/lib/private-chat/accounts.db
+# Opcjonalne TLS (patrz sekcja TLS / HTTPS)
+# Environment=TLS_CERT_FILE=/etc/private-chat/fullchain.pem
+# Environment=TLS_KEY_FILE=/etc/private-chat/privkey.pem
 
 [Install]
 WantedBy=multi-user.target

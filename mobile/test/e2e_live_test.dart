@@ -75,6 +75,120 @@ void main() {
     timeout: const Timeout(Duration(seconds: 30)),
     skip: !live,
   );
+
+  test(
+    'group membership management and vote-kick through live backend',
+    () async {
+      final suffix = DateTime.now().millisecondsSinceEpoch % 100000;
+      final aName = 'alice_$suffix';
+      final bName = 'bob_$suffix';
+      final cName = 'charlie_$suffix';
+      final dName = 'dave_$suffix';
+      final groupName = 'Team_$suffix';
+
+      final alice = ChatController.forServer(serverUrl: url);
+      final bob = ChatController.forServer(serverUrl: url);
+      final charlie = ChatController.forServer(serverUrl: url);
+      final dave = ChatController.forServer(serverUrl: url);
+      addTearDown(alice.dispose);
+      addTearDown(bob.dispose);
+      addTearDown(charlie.dispose);
+      addTearDown(dave.dispose);
+
+      alice.joinAsGuest(aName);
+      bob.joinAsGuest(bName);
+      charlie.joinAsGuest(cName);
+      await _waitFor(
+        () => alice.me != null && bob.me != null && charlie.me != null,
+        'three clients joined',
+      );
+
+      // charlie drops offline before the group exists.
+      charlie.logout();
+
+      alice.createGroup(groupName, <String>[bName, cName]);
+      await _waitFor(
+        () => alice.groups.any((g) => g.name == groupName),
+        'alice received the new group',
+      );
+      await _waitFor(
+        () => bob.groups.any((g) => g.name == groupName),
+        'bob received the new group',
+      );
+
+      // The offline invitee stayed a member and finds the group on rejoin.
+      charlie.joinAsGuest(cName);
+      await _waitFor(() => charlie.me != null, 'charlie rejoined');
+      await _waitFor(
+        () => charlie.groups.any((g) => g.name == groupName),
+        'charlie sees the group after rejoin',
+      );
+
+      dave.joinAsGuest(dName);
+      await _waitFor(() => dave.me != null, 'dave joined');
+      final groupId = alice
+          .groups
+          .firstWhere((g) => g.name == groupName)
+          .groupId;
+      alice.addMember(groupId, dName);
+      await _waitFor(
+        () => alice.groups
+            .any((g) => g.groupId == groupId && g.members.length == 4),
+        'dave added to the group',
+      );
+
+      // Two votes pass only in a three-member group (required = 2), so
+      // charlie's part of the demo ends with an admin remove.
+      alice.removeMember(groupId, cName);
+      await _waitFor(
+        () => alice.groups
+            .any((g) => g.groupId == groupId && g.members.length == 3),
+        'charlie removed from the group',
+      );
+
+      alice.kickVote(groupId, bName);
+      dave.kickVote(groupId, bName);
+      await _waitFor(
+        () =>
+            !bob.groups.any((g) => g.groupId == groupId) &&
+            (bob.error?.startsWith('You were voted out of') ?? false),
+        'bob voted out with the toast',
+      );
+      expect(bob.error, 'You were voted out of $groupName.');
+
+      await _waitFor(
+        () => alice.groups
+            .any((g) => g.groupId == groupId && g.members.length == 2),
+        'alice sees the two remaining members',
+      );
+      await _waitFor(
+        () => dave.groups
+            .any((g) => g.groupId == groupId && g.members.length == 2),
+        'dave sees the two remaining members',
+      );
+      final survivors = alice.groups
+          .firstWhere((g) => g.groupId == groupId)
+          .members
+          .map((m) => m.username);
+      expect(survivors, unorderedEquals(<String>[aName, dName]));
+
+      // A fresh join snapshot must list every name that ever joined.
+      bob.logout();
+      bob.joinAsGuest(bName);
+      await _waitFor(() => bob.me != null, 'bob rejoined');
+      await _waitFor(
+        () => <String>[aName, bName, cName, dName]
+            .every(bob.directory.contains),
+        'bob directory lists everyone',
+      );
+      expect(
+        <String>[aName, bName, cName, dName].every(alice.directory.contains),
+        isTrue,
+      );
+    },
+    timeout: const Timeout(Duration(seconds: 90)),
+    skip: !live,
+  );
 }
 
 Future<void> _waitFor(bool Function() cond, String what) async {
