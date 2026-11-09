@@ -1,5 +1,7 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../../crypto/media_crypto.dart';
 import '../../models/models.dart';
 import '../../state/chat_controller.dart';
 import '../theme/app_theme.dart';
@@ -62,6 +64,49 @@ class ChatScreen extends StatelessWidget {
     return Future<bool>.value(false);
   }
 
+  /// Picks an attachment and hands it to the active conversation; a cancelled
+  /// picker returns true (nothing to do, no error to show).
+  Future<bool> _attach() async {
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const <String>[
+        'jpg',
+        'jpeg',
+        'png',
+        'webp',
+        'mp4',
+        'webm',
+        'mov',
+      ],
+      withData: true,
+    );
+    if (picked == null || picked.files.isEmpty) return true;
+    final file = picked.files.first;
+    final bytes = file.bytes;
+    if (bytes == null) return false;
+
+    final mime = mimeForFileName(file.name) ?? '';
+    final peer = peerUsername;
+    if (peer != null) {
+      return controller.sendMediaMessage(
+        peer,
+        bytes,
+        mime: mime,
+        name: file.name,
+      );
+    }
+    final id = groupId;
+    if (id != null) {
+      return controller.sendGroupMediaMessage(
+        id,
+        bytes,
+        mime: mime,
+        name: file.name,
+      );
+    }
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -97,11 +142,17 @@ class ChatScreen extends StatelessWidget {
                   }
                 },
               ),
-              Expanded(child: MessageList(messages: _messages())),
+              Expanded(
+                child: MessageList(
+                  messages: _messages(),
+                  controller: controller,
+                ),
+              ),
               MessageComposer(
                 enabled:
                     controller.connectionStatus == ConnectionStatus.connected,
                 onSend: _send,
+                onAttach: _attach,
               ),
             ],
           ),

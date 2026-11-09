@@ -30,6 +30,9 @@ Private Chat/
 | `src/validators.ts` | walidacja Zod dla wszystkich payloadow |
 | `src/e2ee.ts` | Kryptograficzne prymitywy ECDH P-256 + HKDF + AES-GCM-256 |
 | `src/e2ee-session.ts` | Zarzadzanie kluczami wspoldzielonymi dla kazdego peera |
+| `src/media-store.ts` | BLOB-y zalacznikow w pamieci, TTL 24 h, limity, okresowe sprzatanie |
+| `src/media-auth.ts` | Tokeny Bearer do mediow (jeden aktywny token na uzytkownika, TTL 24 h) |
+| `src/media-http.ts` | Handler `/media/:id` PUT/GET/OPTIONS z CORS i ograniczaniem tempa |
 | `src/logger.ts` | Strukturalny loger Pino |
 
 ### Frontend (`frontend/`)
@@ -137,6 +140,40 @@ Klient A                      Serwer                      Klient B
    |                            |      (tylko szyfr)        |
 ```
 
+## Udostepnianie mediow
+
+Zdjecia i filmy podrzucane sa jako **zaszyfrowane po stronie klienta zalaczniki**. Nadawca generuje losowy 32-bajtowy klucz pliku i 12-bajtowy IV na plik, usuwa metadane EXIF z obrazow, szyfruje plik AES-256-GCM i wysyla szyfrogram przez `PUT /media/:id`. Wiadomosc czatu wskazujaca plik to zwykla wiadomosc E2EE, ktorej odszyfrowany tekst niesie deskryptor (`fileId`, klucz, IV, SHA-256 szyfrogramu, mime, rozmiar, wymiary, oryginalna nazwa). Klucz pliku nigdy nie opuszcza tresci wiadomosci E2EE — serwer przechowuje nieczytelne bajty. Odbiorca przed odszyfrowaniem porownuje SHA-256 z deskryptorem, wiec podmieniony plik zostaje odrzucony.
+
+### Wydawanie tokenow
+
+Kazde `user:join`, `user:register` i `user:login` konczy sie zdarzeniem `media:token` z tokenem Bearer do wywolan HTTP: 32 losowe bajty zapisane jako 64 male znaki hex, wazne 24 h od wydania. Jeden aktywny token na nazwe uzytkownika — ponowne uwierzytelnienie zastepuje poprzedni token, ktory przestaje dzialac natychmiast. Tokeny zyja tylko w pamieci procesu.
+
+### Koncje HTTP
+
+| Metoda | Sciezka | Auth | Sukces | Bledy |
+|---|---|---|---|---|
+| `PUT` | `/media/:id` | `Authorization: Bearer <mediaToken>` | `201 {"ok":true}` (powtorzony PUT z tym samym id zastepuje wpis) | `400 {"error":"invalid_id"}`, `401 {"error":"unauthorized"}`, `404 {"error":"not_found"}`, `405 {"error":"method_not_allowed"}`, `413 {"error":"too_large"}`, `429 {"error":"rate_limited"}`, `429 {"error":"quota_exceeded"}` |
+| `GET` | `/media/:id` | `Authorization: Bearer <mediaToken>` | `200`, cialo = szyfrogram jako `application/octet-stream` z `Cache-Control: no-store` | `400`, `401`, `404 {"error":"not_found"}` (brak lub wygasly) |
+| `OPTIONS` | `/media/*` | preflight CORS | `204` + naglowki CORS | — |
+
+Wysylki sa limitowane do 10 PUT/s na token. Serwer przechowuje dokladnie bajty szyfrogramu — bez parsowania, bez transformacji.
+
+### Limity, TTL, wyzerowanie przy awarii
+
+- **Tylko w pamieci** — pliki nigdy nie trafiaja na dysk ani do SQLite. Restart lub awaria kasuje wszystkie zalaczniki; klienty pokazuja wtedy `Attachment expired`.
+- **Limity** — 16 MiB na plik (limit w sieci to 16 MiB + 16-bajtowy tag GCM), lacznie 512 MB i 1000 plikow.
+- **TTL** — 24 godziny od wysylki; wygasle pliki sa sprzatane co 30 sekund. Nie ma usuwania po pobraniu, wiec kazdy odbiorca moze pobrac ten sam plik.
+
+### URL jako uprawnienie
+
+`GET /media/:id` wymaga waznego tokena, ale kazdy posiadacz tokena z `fileId` moze pobrac plik. Serwer nie zna odbiorcow — deskryptor lezy w szyfrowanej tresci E2EE — wiec `fileId` jest uprawnieniem: losowy UUID v4 wybrany przez klienta (122 bity) jest nieodgadywalny, to ten sam model capability-URL, ktorego uzywaja WhatsApp i Matrix do plikow CDN. Tokeny nie pozwalaja osiagnac konca anonimowo.
+
+### Zaakceptowane luki
+
+- Kontenery wideo nie sa czyszczone — EXIF nosza tylko obrazy, wiec tylko obrazy sa przycinane.
+- Token przetrwuje jawne wylogowanie do 24 h; zyje tylko w pamieci procesu i jest zastepowany przy najblizszym logowaniu.
+- Stare klienty dostajace wiadomosc media pokazuja surowy JSON koperty jako tekst — z degradacja, nigdy z awaria.
+
 ## TLS / HTTPS
 
 Certyfikaty sa zawsze przygotowywane zewnetrznie (certbot, Twoja CA, `openssl`) — aplikacja nie zawiera automatyzacji ACME/Let's Encrypt. Do wyboru sa dwie opcje:
@@ -174,6 +211,7 @@ Po wyczyszczeniu zmiennych serwer nadal musi odpowiadac na `http://localhost:300
 ## Funkcje
 
 - **Szyfrowanie end-to-end** - ECDH + AES-GCM-256, serwer nigdy nie widzi tekstu jawnego
+- **Udostepnianie mediow** - szyfrowane zdjecia/wideo, bloby w pamieci z TTL 24 h
 - **System kont** - Rejestracja/login z haslem (bcrypt), opcjonalny PIN
 - **Tryb goscia** - Dolacz bez konta (tymczasowa tozsamosc)
 - **Offline czlonkowie grup** - Uzytkownikow mozna dodawac do grup, nawet gdy sa offline
@@ -189,6 +227,7 @@ Po wyczyszczeniu zmiennych serwer nadal musi odpowiadac na `http://localhost:300
 Co serwer przechowuje:
 
 - **Konta** - nazwa uzytkownika, hash hasla (bcrypt), opcjonalny hash PIN (SQLite).
+- **Szyfrogramy zalacznikow** - wyslane zdjecia/wideo trzymane tylko w pamieci procesu (16 MiB na plik, lacznie 512 MB / 1000 plikow, TTL 24 h). Nigdy na dysku; zerowane przy resecie.
 - **Nazwy gosci** - nazwa goscia, ktory kiedys dolaczyl, zostaje w malej tabeli katalogowej, zeby mozna bylo dodac te osobe do grupy pozniej, takze gdy jest offline. Dla gosci nie sa przechowywane zadne wiadomosci, dane logowania ani historia obecnosci.
 
 Czego serwer nigdy nie przechowuje: tresci wiadomosci (E2EE, tylko relaya) oraz stanu sesji poza rejestrem w pamieci.
@@ -278,8 +317,22 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 86400;
     }
+
+    # Proxy wysylek i pobieran mediow do backendu
+    location /media/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # nginx domyslnie dopuszcza 1 MB, co dawaloby 413 na kazdym zalaczniku
+        client_max_body_size 17m;
+    }
 }
 ```
+
+Obie direktwy media sa potrzebne: bez `location /media/` wysylki nie docieraja do backendu, a bez `client_max_body_size 17m;` (plik 16 MiB + 16-bajtowy tag GCM + zapas) domyslny limit 1 MB nginx odrzuca kazde wyslanie kodem 413.
 
 Jesli to backend konczy TLS (opcja A), zmien `proxy_pass` na `https://127.0.0.1:3000`.
 

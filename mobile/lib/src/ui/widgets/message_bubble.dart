@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../models/models.dart';
+import '../../state/chat_controller.dart';
 import '../theme/app_theme.dart';
+import 'media_attachment.dart';
 
 /// One render-ready message, normalized from either wire model so the
 /// bubble and list only deal with a single shape.
@@ -12,6 +14,7 @@ class MessageView {
     required this.timestamp,
     this.sender,
     this.decryptionFailed = false,
+    this.media,
   });
 
   factory MessageView.fromPrivate(DecryptedMessage message) {
@@ -20,6 +23,7 @@ class MessageView {
       isOwn: message.isOwn,
       timestamp: message.timestamp,
       decryptionFailed: message.decryptionFailed,
+      media: message.media,
     );
   }
 
@@ -30,6 +34,7 @@ class MessageView {
       timestamp: message.timestamp,
       sender: message.fromUsername,
       decryptionFailed: message.decryptionFailed,
+      media: message.media,
     );
   }
 
@@ -44,6 +49,9 @@ class MessageView {
   /// the controller already fills [text] with `[Encrypted]` /
   /// `[Decryption failed]`.
   final bool decryptionFailed;
+
+  /// Attachment descriptor for media messages, null for plain text.
+  final MediaDescriptor? media;
 }
 
 /// Rounded chat bubble with a soft shadow: indigo for our own messages,
@@ -56,15 +64,19 @@ class MessageBubble extends StatelessWidget {
     required this.timestamp,
     this.sender,
     this.decryptionFailed = false,
+    this.media,
+    this.controller,
   });
 
-  factory MessageBubble.fromView(MessageView view) {
+  factory MessageBubble.fromView(MessageView view, {ChatController? controller}) {
     return MessageBubble(
       text: view.text,
       isOwn: view.isOwn,
       timestamp: view.timestamp,
       sender: view.sender,
       decryptionFailed: view.decryptionFailed,
+      media: view.media,
+      controller: controller,
     );
   }
 
@@ -73,6 +85,8 @@ class MessageBubble extends StatelessWidget {
   final int timestamp;
   final String? sender;
   final bool decryptionFailed;
+  final MediaDescriptor? media;
+  final ChatController? controller;
 
   String get _time {
     final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
@@ -122,7 +136,9 @@ class MessageBubble extends StatelessWidget {
                   ),
                 ],
               ),
-              child: decryptionFailed
+              child: media != null && !decryptionFailed && controller != null
+                  ? MediaAttachment(descriptor: media!, controller: controller!)
+                  : decryptionFailed
                   ? Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [

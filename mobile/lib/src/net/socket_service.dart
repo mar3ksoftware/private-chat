@@ -135,6 +135,9 @@ abstract interface class SocketService {
   /// `group:kick:tally` — the current vote-kick tally for a group.
   Unsubscribe onGroupKickTally(void Function(KickTally tally) handler);
 
+  /// `media:token` — bearer token for the `/media` HTTP endpoints.
+  Unsubscribe onMediaToken(void Function(MediaTokenPayload payload) handler);
+
   // ── Connection lifecycle listeners ─────────────────────────────────────
 
   /// Socket.IO `connect` — also fires on every successful reconnect.
@@ -376,6 +379,13 @@ class IoSocketService implements SocketService {
   Unsubscribe onGroupKickTally(void Function(KickTally tally) handler) {
     return _on(ChatEvents.groupKickTally, (data) {
       handler(KickTally.fromJson(asJsonMap(data)));
+    });
+  }
+
+  @override
+  Unsubscribe onMediaToken(void Function(MediaTokenPayload payload) handler) {
+    return _on(ChatEvents.mediaToken, (data) {
+      handler(MediaTokenPayload.fromJson(asJsonMap(data)));
     });
   }
 

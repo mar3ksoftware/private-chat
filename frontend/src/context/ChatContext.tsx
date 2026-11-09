@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef } from 'react';
 import { E2eeSession } from '../lib/e2ee-session';
+import { clearMediaCache, MediaError, parseMediaEnvelope, prepareAndUpload } from '../lib/media';
 import { getSocket } from '../lib/socket';
 import type {
   DecryptedGroupMessage,
@@ -173,12 +174,15 @@ export type ChatContextValue = {
   readonly users: readonly UserInfo[];
   readonly messages: readonly DecryptedMessage[];
   readonly sendMessage: (toUsername: string, plaintext: string) => Promise<boolean>;
+  readonly sendMediaMessage: (toUsername: string, file: File) => Promise<boolean>;
   readonly groups: readonly GroupInfo[];
   readonly groupMessages: readonly DecryptedGroupMessage[];
   readonly directory: readonly string[];
   readonly kickTallies: readonly KickTally[];
   readonly createGroup: (name: string, members: readonly string[]) => void;
   readonly sendGroupMessage: (groupId: string, plaintext: string) => Promise<boolean>;
+  readonly sendGroupMediaMessage: (groupId: string, file: File) => Promise<boolean>;
+  readonly mediaToken: string | null;
   readonly addMember: (groupId: string, username: string) => void;
   readonly removeMember: (groupId: string, username: string) => void;
   readonly voteKick: (groupId: string, username: string) => void;
@@ -221,6 +225,8 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
   // Kept in memory only — never persisted to storage.
   const credentialsRef = useRef<StoredCredentials | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Kept in memory only — never persisted to storage.
+  const mediaTokenRef = useRef<string | null>(null);
 
   stateRef.current = state;
 
@@ -281,6 +287,8 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
   const logout = useCallback(() => {
     credentialsRef.current = null;
     pendingGuestRef.current = null;
+    mediaTokenRef.current = null;
+    clearMediaCache();
     if (errorTimerRef.current !== null) {
       clearTimeout(errorTimerRef.current);
       errorTimerRef.current = null;
@@ -371,6 +379,37 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     [showError],
   );
 
+  const prepareMediaEnvelope = useCallback(
+    async (file: File): Promise<string | null> => {
+      try {
+        const descriptor = await prepareAndUpload(file, mediaTokenRef.current ?? '');
+        return JSON.stringify(descriptor);
+      } catch (error) {
+        showError(error instanceof MediaError ? error.message : 'Upload failed. Please try again.');
+        return null;
+      }
+    },
+    [showError],
+  );
+
+  const sendMediaMessage = useCallback(
+    async (toUsername: string, file: File): Promise<boolean> => {
+      const envelope = await prepareMediaEnvelope(file);
+      if (envelope === null) return false;
+      return sendMessage(toUsername, envelope);
+    },
+    [prepareMediaEnvelope, sendMessage],
+  );
+
+  const sendGroupMediaMessage = useCallback(
+    async (groupId: string, file: File): Promise<boolean> => {
+      const envelope = await prepareMediaEnvelope(file);
+      if (envelope === null) return false;
+      return sendGroupMessage(groupId, envelope);
+    },
+    [prepareMediaEnvelope, sendGroupMessage],
+  );
+
   useEffect(() => {
     const socket = socketRef.current;
 
@@ -399,6 +438,8 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     };
 
     const handleDisconnect = () => {
+      mediaTokenRef.current = null;
+      clearMediaCache();
       dispatch({ type: 'SET_CONNECTION_STATUS', payload: 'disconnected' });
     };
 
@@ -414,6 +455,10 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     socket.on('disconnect', handleDisconnect);
     socket.on('connect_error', handleConnectError);
     socket.io.on('reconnect_attempt', handleReconnectAttempt);
+
+    socket.on(EVENTS.SERVER.MEDIA_TOKEN, (payload) => {
+      mediaTokenRef.current = payload.token;
+    });
 
     socket.on(EVENTS.SERVER.LOGIN_SUCCESS, (result) => {
       if (result.kind === 'login_success') {
@@ -515,6 +560,7 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
               timestamp: msg.timestamp,
               isOwn,
               decryptionFailed: false,
+              media: parseMediaEnvelope(plaintext),
             },
           });
         },
@@ -530,6 +576,7 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
               timestamp: msg.timestamp,
               isOwn,
               decryptionFailed: true,
+              media: null,
             },
           });
         },
@@ -586,6 +633,7 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
             ...base,
             plaintext: '[Encrypted]',
             decryptionFailed: true,
+            media: null,
           },
         });
         return;
@@ -595,13 +643,23 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
         (plaintext) => {
           dispatch({
             type: 'ADD_GROUP_MESSAGE',
-            payload: { ...base, plaintext, decryptionFailed: false },
+            payload: {
+              ...base,
+              plaintext,
+              decryptionFailed: false,
+              media: parseMediaEnvelope(plaintext),
+            },
           });
         },
         () => {
           dispatch({
             type: 'ADD_GROUP_MESSAGE',
-            payload: { ...base, plaintext: '[Decryption failed]', decryptionFailed: true },
+            payload: {
+              ...base,
+              plaintext: '[Decryption failed]',
+              decryptionFailed: true,
+              media: null,
+            },
           });
         },
       );
@@ -634,6 +692,8 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       socket.io.off('reconnect_attempt', handleReconnectAttempt);
       socket.removeAllListeners();
       socket.disconnect();
+      mediaTokenRef.current = null;
+      clearMediaCache();
       if (errorTimerRef.current !== null) {
         clearTimeout(errorTimerRef.current);
         errorTimerRef.current = null;
@@ -650,12 +710,15 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     users: state.users,
     messages: state.messages,
     sendMessage,
+    sendMediaMessage,
     groups: state.groups,
     groupMessages: state.groupMessages,
     directory: state.directory,
     kickTallies: state.kickTallies,
     createGroup,
     sendGroupMessage,
+    sendGroupMediaMessage,
+    mediaToken: mediaTokenRef.current,
     addMember,
     removeMember,
     voteKick,

@@ -4,6 +4,7 @@ import type { Server as IoServer, Socket } from 'socket.io';
 import type { AccountStore } from './account-store';
 import type { GroupStore } from './group-store';
 import type { KickVoteStore } from './kick-vote-store';
+import type { MediaAuth } from './media-auth';
 import type { RateLimiterRegistry } from './rate-limiter';
 import type {
   ClientToServerEvents,
@@ -48,6 +49,7 @@ export function createServer(
   groupStore: GroupStore,
   userDirectory: UserDirectory,
   kickVoteStore: KickVoteStore,
+  mediaAuth: MediaAuth,
   logger: Logger,
 ): void {
   const pendingRegistrations = new Set<string>();
@@ -69,6 +71,7 @@ export function createServer(
         socket.emit(EVENTS.SERVER.GROUP_KICK_TALLY, tally);
       }
     }
+    socket.emit(EVENTS.SERVER.MEDIA_TOKEN, { token: mediaAuth.issue(userId) });
   };
 
   // Membership is read when this runs, so cancellation tallies still reach the

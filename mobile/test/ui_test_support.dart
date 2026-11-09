@@ -4,12 +4,15 @@
 //
 // Not suffixed with `_test.dart` so `flutter test` does not run it directly.
 
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:private_chat_mobile/main.dart';
 import 'package:private_chat_mobile/src/crypto/e2ee_session.dart';
 import 'package:private_chat_mobile/src/models/models.dart';
 import 'package:private_chat_mobile/src/net/chat_events.dart';
+import 'package:private_chat_mobile/src/net/media_client.dart';
 import 'package:private_chat_mobile/src/net/socket_service.dart';
 import 'package:private_chat_mobile/src/state/chat_controller.dart';
 
@@ -253,6 +256,13 @@ class FakeSocketService implements SocketService {
     });
   }
 
+  @override
+  Unsubscribe onMediaToken(void Function(MediaTokenPayload payload) handler) {
+    return _register(ChatEvents.mediaToken, (data) {
+      handler(data! as MediaTokenPayload);
+    });
+  }
+
   // ── Connection lifecycle listeners ─────────────────────────────────────
 
   @override
@@ -273,6 +283,51 @@ class FakeSocketService implements SocketService {
   @override
   Unsubscribe onReconnectAttempt(void Function() handler) {
     return _register(ChatEvents.reconnectAttempt, (_) => handler());
+  }
+}
+
+// ── Media transport fake ─────────────────────────────────────────────────
+
+/// In-memory [MediaClient] that records every call and serves canned
+/// results, so the controller's upload/fetch pipeline runs without a
+/// backend.
+class FakeMediaClient implements MediaClient {
+  /// Every `upload` call, in order.
+  final List<({String fileId, Uint8List ciphertext, String token})> uploads =
+      <({String fileId, Uint8List ciphertext, String token})>[];
+
+  /// Every `download` call, in order.
+  final List<({String fileId, String token})> downloads =
+      <({String fileId, String token})>[];
+
+  /// Returned by `upload` when [uploadError] is null.
+  bool uploadOk = true;
+
+  /// When set, `upload` throws it instead of returning [uploadOk].
+  MediaUploadException? uploadError;
+
+  /// Served by every `download`; swap it between calls to script a flow.
+  MediaFetchResult downloadResult = const MediaFetchResult.error();
+
+  @override
+  Future<bool> upload({
+    required String fileId,
+    required Uint8List ciphertext,
+    required String token,
+  }) async {
+    uploads.add((fileId: fileId, ciphertext: ciphertext, token: token));
+    final error = uploadError;
+    if (error != null) throw error;
+    return uploadOk;
+  }
+
+  @override
+  Future<MediaFetchResult> download({
+    required String fileId,
+    required String token,
+  }) async {
+    downloads.add((fileId: fileId, token: token));
+    return downloadResult;
   }
 }
 

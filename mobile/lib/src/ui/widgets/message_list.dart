@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../state/chat_controller.dart';
 import 'empty_state.dart';
 import 'message_bubble.dart';
 
@@ -10,10 +11,14 @@ class MessageList extends StatefulWidget {
     super.key,
     required this.messages,
     this.emptyTitle = 'Start of conversation',
+    this.controller,
   });
 
   final List<MessageView> messages;
   final String emptyTitle;
+
+  /// Passed through to bubbles so media messages can fetch their files.
+  final ChatController? controller;
 
   @override
   State<MessageList> createState() => _MessageListState();
@@ -95,7 +100,10 @@ class _MessageListState extends State<MessageList> {
         final message = _messages[index];
         return Padding(
           padding: const EdgeInsets.only(bottom: 12),
-          child: MessageBubble.fromView(message),
+          child: MessageBubble.fromView(
+            message,
+            controller: widget.controller,
+          ),
         );
       },
     );

@@ -1,5 +1,6 @@
 import type { DecryptedGroupMessage, DecryptedMessage } from '../types';
 import { LinkifiedText } from './LinkifiedText';
+import { MediaAttachment } from './MediaAttachment';
 
 type MessageBubbleProps = {
   readonly message: DecryptedMessage | DecryptedGroupMessage;
@@ -28,9 +29,13 @@ export function MessageBubble({ message, showSender }: MessageBubbleProps) {
             : 'bg-zinc-800 text-zinc-100 rounded-2xl rounded-bl-md'
         }`}
       >
-        <p className="text-sm break-words">
-          {message.decryptionFailed ? content : <LinkifiedText text={content} />}
-        </p>
+        {message.media != null && !message.decryptionFailed ? (
+          <MediaAttachment descriptor={message.media} />
+        ) : (
+          <p className="text-sm break-words">
+            {message.decryptionFailed ? content : <LinkifiedText text={content} />}
+          </p>
+        )}
       </div>
       <span className="text-xs text-zinc-500 px-1">{formatTime(message.timestamp)}</span>
     </div>

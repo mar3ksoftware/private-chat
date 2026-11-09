@@ -99,6 +99,10 @@ export type MessageRejectedPayload = {
   readonly reason: string;
 };
 
+export type MediaTokenPayload = {
+  readonly token: string; // 64 lowercase hex chars (32 random bytes)
+};
+
 export type ErrorPayload = {
   readonly message: string;
 };
@@ -225,6 +229,12 @@ export const CONSTANTS = {
   MAX_GROUP_NAME_LENGTH: 50,
   MAX_GROUP_MEMBERS: 50,
   KICK_VOTE_TTL_MS: 60_000,
+  MAX_MEDIA_BYTES: 16 * 1024 * 1024,
+  MAX_MEDIA_TOTAL_BYTES: 512 * 1024 * 1024,
+  MAX_MEDIA_FILES: 1000,
+  MEDIA_TTL_MS: 24 * 60 * 60 * 1000,
+  MEDIA_SWEEP_INTERVAL_MS: 30_000,
+  MEDIA_TOKEN_TTL_MS: 24 * 60 * 60 * 1000,
 } as const;
 
 // ── Event name map ────────────────────────────────────────────────────
@@ -263,6 +273,7 @@ export const EVENTS = {
     USERS_DIRECTORY: 'users:directory',
     GROUP_MEMBER_REMOVED: 'group:member:removed',
     GROUP_KICK_TALLY: 'group:kick:tally',
+    MEDIA_TOKEN: 'media:token',
   },
 } as const;
 
@@ -297,6 +308,7 @@ export type ServerToClientEvents = {
   readonly [EVENTS.SERVER.USERS_DIRECTORY]: (usernames: readonly string[]) => void;
   readonly [EVENTS.SERVER.GROUP_MEMBER_REMOVED]: (payload: GroupMemberRemovedPayload) => void;
   readonly [EVENTS.SERVER.GROUP_KICK_TALLY]: (payload: KickTallyPayload) => void;
+  readonly [EVENTS.SERVER.MEDIA_TOKEN]: (payload: MediaTokenPayload) => void;
 };
 
 export type ClientToServerEvents = {

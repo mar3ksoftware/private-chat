@@ -9,6 +9,7 @@ class MessageComposer extends StatefulWidget {
     super.key,
     required this.onSend,
     required this.enabled,
+    this.onAttach,
   });
 
   /// Attempts to send the trimmed text; returns false when it did not go out.
@@ -16,6 +17,9 @@ class MessageComposer extends StatefulWidget {
 
   /// False while the socket is disconnected: input and button are disabled.
   final bool enabled;
+
+  /// Picks and sends an attachment; the attach button is hidden when null.
+  final Future<bool> Function()? onAttach;
 
   @override
   State<MessageComposer> createState() => _MessageComposerState();
@@ -26,6 +30,7 @@ class _MessageComposerState extends State<MessageComposer> {
 
   final TextEditingController _textController = TextEditingController();
   bool _sending = false;
+  bool _attaching = false;
   String? _localError;
 
   @override
@@ -33,14 +38,17 @@ class _MessageComposerState extends State<MessageComposer> {
     _textController.dispose();
     super.dispose();
   }
- bool get _canSend =>
+  bool get _canSend =>
       widget.enabled &&
       !_sending &&
+      !_attaching &&
       _textController.text.trim().isNotEmpty;
+
+  bool get _busy => _sending || _attaching;
 
   Future<void> _send() async {
     final text = _textController.text.trim();
-    if (text.isEmpty || _sending || !widget.enabled) return;
+    if (text.isEmpty || _busy || !widget.enabled) return;
     setState(() {
       _sending = true;
       _localError = null;
@@ -61,6 +69,19 @@ class _MessageComposerState extends State<MessageComposer> {
         _localError = 'Message not sent. Please try again.';
       }
     });
+  }
+
+  Future<void> _attach() async {
+    final onAttach = widget.onAttach;
+    if (onAttach == null || _busy || !widget.enabled) return;
+    setState(() => _attaching = true);
+    try {
+      await onAttach();
+    } catch (_) {
+      // The controller already toasts the specific attachment failure.
+    }
+    if (!mounted) return;
+    setState(() => _attaching = false);
   }
 
   @override
@@ -85,10 +106,26 @@ class _MessageComposerState extends State<MessageComposer> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
+              if (widget.onAttach != null)
+                IconButton(
+                  onPressed:
+                      _busy || !widget.enabled ? null : _attach,
+                  tooltip: 'Attach file',
+                  icon: _attaching
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.accent,
+                          ),
+                        )
+                      : const Icon(Icons.attach_file_outlined, size: 22),
+                ),
               Expanded(
                 child: TextField(
                   controller: _textController,
-                  enabled: widget.enabled,
+                  enabled: widget.enabled && !_busy,
                   onChanged: (_) => setState(() {}),
                   onSubmitted: (_) => _send(),
                   textInputAction: TextInputAction.send,

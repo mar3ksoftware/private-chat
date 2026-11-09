@@ -5,6 +5,7 @@
 // Skipped unless RUN_LIVE_E2E=1 (requires backend on SERVER_URL):
 //   RUN_LIVE_E2E=1 flutter test test/e2e_live_test.dart
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:private_chat_mobile/src/state/chat_controller.dart';
@@ -187,6 +188,64 @@ void main() {
       );
     },
     timeout: const Timeout(Duration(seconds: 90)),
+    skip: !live,
+  );
+
+  test(
+    'media attachment round trip through live backend',
+    () async {
+      final suffix = DateTime.now().millisecondsSinceEpoch % 100000;
+      final aName = 'alice_$suffix';
+      final bName = 'bob_$suffix';
+      final alice = ChatController.forServer(serverUrl: url);
+      final bob = ChatController.forServer(serverUrl: url);
+      addTearDown(alice.dispose);
+      addTearDown(bob.dispose);
+
+      alice.joinAsGuest(aName);
+      bob.joinAsGuest(bName);
+
+      await _waitFor(() => alice.me != null && bob.me != null, 'both joined');
+      await _waitFor(
+        () =>
+            alice.e2ee.hasSharedKey(bName) && bob.e2ee.hasSharedKey(aName),
+        'shared keys derived on both sides',
+      );
+      await _waitFor(() => alice.mediaToken != null, 'alice media token');
+      await _waitFor(() => bob.mediaToken != null, 'bob media token');
+
+      // Video mime skips the EXIF path, so no image fixture is needed here.
+      final original = Uint8List.fromList(
+        List<int>.generate(1024, (index) => index % 251),
+      );
+      expect(
+        await alice.sendMediaMessage(
+          bName,
+          original,
+          mime: 'video/mp4',
+          name: 'clip.mp4',
+        ),
+        isTrue,
+        reason: 'alice media send failed: ${alice.error}',
+      );
+
+      await _waitFor(
+        () => bob.messagesForPeer(aName).any((message) => message.media != null),
+        'bob received the media message',
+      );
+      final received = bob
+          .messagesForPeer(aName)
+          .lastWhere((message) => message.media != null);
+      final descriptor = received.media!;
+      expect(descriptor.mime, 'video/mp4');
+      expect(descriptor.name, 'clip.mp4');
+      expect(descriptor.size, original.length);
+
+      final fetched = await bob.loadMedia(descriptor);
+      expect(fetched.status, 'ready', reason: 'media fetch did not succeed');
+      expect(fetched.bytes, orderedEquals(original));
+    },
+    timeout: const Timeout(Duration(seconds: 30)),
     skip: !live,
   );
 }

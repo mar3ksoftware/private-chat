@@ -6,6 +6,9 @@ import { config } from './config';
 import { GroupStore } from './group-store';
 import { KickVoteStore } from './kick-vote-store';
 import { logger } from './logger';
+import { MediaAuth } from './media-auth';
+import { createMediaHttpHandler } from './media-http';
+import { MediaStore } from './media-store';
 import { RateLimiterRegistry } from './rate-limiter';
 import { createServer } from './server';
 import type { ClientToServerEvents, ServerToClientEvents } from './types';
@@ -33,6 +36,16 @@ const accountStore = new AccountStore(db);
 const userDirectory = new UserDirectory(db);
 const groupStore = new GroupStore();
 const kickVoteStore = new KickVoteStore();
+const mediaStore = new MediaStore();
+const mediaAuth = new MediaAuth();
+const mediaRateLimiters = new RateLimiterRegistry();
+const mediaHttp = createMediaHttpHandler(
+  mediaStore,
+  mediaAuth,
+  mediaRateLimiters,
+  config.corsOrigins,
+  logger,
+);
 
 createServer(
   io,
@@ -42,6 +55,7 @@ createServer(
   groupStore,
   userDirectory,
   kickVoteStore,
+  mediaAuth,
   logger,
 );
 
@@ -62,6 +76,9 @@ const server = Bun.serve({
         headers: { 'content-type': 'application/json' },
       });
     }
+    if (url.pathname.startsWith('/media')) {
+      return mediaHttp(req);
+    }
     return handler.fetch(req, srv);
   },
   websocket: handler.websocket,
@@ -77,6 +94,9 @@ function shutdown(): void {
   rateLimiters.destroy();
   accountStore.destroy();
   groupStore.destroy();
+  mediaStore.destroy();
+  mediaAuth.destroy();
+  mediaRateLimiters.destroy();
   server.stop(true);
   process.exit(0);
 }

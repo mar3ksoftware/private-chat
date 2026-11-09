@@ -1,4 +1,5 @@
 import 'json_utils.dart';
+import 'media.dart';
 
 /// Outbound `message:send` payload.
 class EncryptedMessagePayload {
@@ -116,6 +117,7 @@ class DecryptedMessage {
     required this.timestamp,
     required this.isOwn,
     required this.decryptionFailed,
+    this.media,
   });
 
   factory DecryptedMessage.fromJson(Map<String, dynamic> json) {
@@ -128,6 +130,7 @@ class DecryptedMessage {
       timestamp: readInt(json['timestamp']),
       isOwn: readBool(json['isOwn']),
       decryptionFailed: readBool(json['decryptionFailed']),
+      media: MediaDescriptor.tryFromJson(json['media']),
     );
   }
 
@@ -139,6 +142,9 @@ class DecryptedMessage {
   final int timestamp;
   final bool isOwn;
   final bool decryptionFailed;
+
+  /// Attachment descriptor parsed from the plaintext, or null for text.
+  final MediaDescriptor? media;
 
   /// The other participant in this conversation, regardless of direction.
   String get peerUsername => isOwn ? toUsername : fromUsername;
@@ -152,9 +158,14 @@ class DecryptedMessage {
     'timestamp': timestamp,
     'isOwn': isOwn,
     'decryptionFailed': decryptionFailed,
+    if (media != null) 'media': media!.toJson(),
   };
 
-  DecryptedMessage copyWith({String? plaintext, bool? decryptionFailed}) {
+  DecryptedMessage copyWith({
+    String? plaintext,
+    bool? decryptionFailed,
+    MediaDescriptor? media,
+  }) {
     return DecryptedMessage(
       from: from,
       fromUsername: fromUsername,
@@ -164,6 +175,7 @@ class DecryptedMessage {
       timestamp: timestamp,
       isOwn: isOwn,
       decryptionFailed: decryptionFailed ?? this.decryptionFailed,
+      media: media ?? this.media,
     );
   }
 }
@@ -244,6 +256,7 @@ class DecryptedGroupMessage {
     required this.timestamp,
     required this.isOwn,
     required this.decryptionFailed,
+    this.media,
   });
 
   factory DecryptedGroupMessage.fromJson(Map<String, dynamic> json) {
@@ -255,6 +268,7 @@ class DecryptedGroupMessage {
       timestamp: readInt(json['timestamp']),
       isOwn: readBool(json['isOwn']),
       decryptionFailed: readBool(json['decryptionFailed']),
+      media: MediaDescriptor.tryFromJson(json['media']),
     );
   }
 
@@ -266,6 +280,9 @@ class DecryptedGroupMessage {
   final bool isOwn;
   final bool decryptionFailed;
 
+  /// Attachment descriptor parsed from the plaintext, or null for text.
+  final MediaDescriptor? media;
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'groupId': groupId,
     'from': from,
@@ -274,11 +291,13 @@ class DecryptedGroupMessage {
     'timestamp': timestamp,
     'isOwn': isOwn,
     'decryptionFailed': decryptionFailed,
+    if (media != null) 'media': media!.toJson(),
   };
 
   DecryptedGroupMessage copyWith({
     String? plaintext,
     bool? decryptionFailed,
+    MediaDescriptor? media,
   }) {
     return DecryptedGroupMessage(
       groupId: groupId,
@@ -288,6 +307,7 @@ class DecryptedGroupMessage {
       timestamp: timestamp,
       isOwn: isOwn,
       decryptionFailed: decryptionFailed ?? this.decryptionFailed,
+      media: media ?? this.media,
     );
   }
 }

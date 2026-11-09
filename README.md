@@ -30,6 +30,9 @@ Private Chat/
 | `src/validators.ts` | Zod validation for all payloads |
 | `src/e2ee.ts` | ECDH P-256 + HKDF + AES-GCM-256 crypto primitives |
 | `src/e2ee-session.ts` | Per-peer shared key management |
+| `src/media-store.ts` | In-memory attachment blobs, 24 h TTL, quotas, periodic sweep |
+| `src/media-auth.ts` | Media bearer tokens (one active token per user, 24 h TTL) |
+| `src/media-http.ts` | `/media/:id` PUT/GET/OPTIONS handler with CORS and rate limiting |
 | `src/logger.ts` | Pino structured logger |
 | `src/config.ts` | Port, CORS, log level, ping intervals |
 
@@ -138,6 +141,40 @@ Client A                    Server                    Client B
    |                          |      (ciphertext only)  |
 ```
 
+## Media sharing
+
+Photos and videos travel as **client-side encrypted attachments**. The sender generates a random 32-byte file key and a 12-byte IV per file, strips EXIF metadata from images, encrypts the file with AES-256-GCM, and uploads the ciphertext with `PUT /media/:id`. The chat message that references the file is an ordinary E2EE message whose decrypted plaintext carries a descriptor (`fileId`, key, IV, SHA-256 of the ciphertext, mime, size, dimensions, original name). The file key never leaves the E2EE message body — the server stores opaque bytes it cannot read. The receiver verifies SHA-256 against the descriptor before decrypting, so a swapped blob is rejected.
+
+### Token issuance
+
+Every `user:join`, `user:register`, and `user:login` ends with a `media:token` socket event carrying the Bearer token for HTTP media calls: 32 random bytes as 64 lowercase hex characters, valid 24 h from issue. One active token per username — re-authentication replaces the previous token, which stops working immediately. Tokens live in process memory only.
+
+### HTTP endpoints
+
+| Method | Path | Auth | Success | Errors |
+|---|---|---|---|---|
+| `PUT` | `/media/:id` | `Authorization: Bearer <mediaToken>` | `201 {"ok":true}` (a repeat PUT with the same id replaces the entry) | `400 {"error":"invalid_id"}`, `401 {"error":"unauthorized"}`, `404 {"error":"not_found"}`, `405 {"error":"method_not_allowed"}`, `413 {"error":"too_large"}`, `429 {"error":"rate_limited"}`, `429 {"error":"quota_exceeded"}` |
+| `GET` | `/media/:id` | `Authorization: Bearer <mediaToken>` | `200`, body = ciphertext as `application/octet-stream` with `Cache-Control: no-store` | `400`, `401`, `404 {"error":"not_found"}` (missing or expired) |
+| `OPTIONS` | `/media/*` | CORS preflight | `204` + CORS headers | — |
+
+Uploads are rate-limited to 10 PUT/s per token. The server stores the exact ciphertext bytes — no parsing, no transformation.
+
+### Quotas, TTL, crash-wipe
+
+- **In memory only** — blobs are never written to disk or into SQLite. A restart or crash wipes every attachment; clients then render `Attachment expired`.
+- **Quotas** — 16 MiB per file (the wire limit is 16 MiB + the 16-byte GCM tag), 512 MB and 1000 files total.
+- **TTL** — 24 hours from upload; expired blobs are swept every 30 seconds. There is no delete-on-fetch, so several recipients can each download the same file.
+
+### Capability URL
+
+`GET /media/:id` requires a valid token, but any token holder with the `fileId` may fetch the blob. The server cannot know the recipients — the descriptor lives inside E2EE ciphertext — so the `fileId` is the capability: a client-chosen random UUID v4 (122 bits) is unguessable, the same capability-URL model WhatsApp and Matrix use for CDN blobs. Tokens keep the endpoint from being anonymously reachable.
+
+### Accepted gaps
+
+- Video containers are not scrubbed — only images carry EXIF, so only images are stripped.
+- A token survives an explicit logout for up to 24 h; it lives only in process memory and is replaced on the next login.
+- Old clients that receive a media message render the raw envelope JSON as text — degraded, never crashed.
+
 ## TLS / HTTPS
 
 Certificates are always provisioned externally (certbot, your CA, `openssl`) — the app contains no ACME/Let's Encrypt automation. Pick one of two options:
@@ -175,6 +212,7 @@ With the variables unset the server must still answer plain `http://localhost:30
 ## Features
 
 - **End-to-end encryption** — ECDH + AES-GCM-256, server never sees plaintext
+- **Media sharing** — attach encrypted photos/videos; in-memory blobs with a 24 h TTL
 - **Account system** — Register/login with password (bcrypt), optional PIN
 - **Guest mode** — Join without an account (ephemeral identity)
 - **Offline group members** — Users can be added to groups while they are offline
@@ -190,6 +228,7 @@ With the variables unset the server must still answer plain `http://localhost:30
 What the server stores:
 
 - **Accounts** — username, bcrypt password hash, optional PIN hash (SQLite).
+- **Attachment ciphertext** — uploaded photos/videos held in process memory only (16 MiB per file, 512 MB / 1000 files total, 24 h TTL). Never written to disk; wiped on restart.
 - **Guest usernames** — a guest name that has joined once is kept in a small directory table so that person can be added to groups later, even while offline. No messages, credentials, or presence history are stored for guests.
 
 What the server never stores: message bodies (E2EE, relay only), session state beyond the in-memory registry.
@@ -279,8 +318,22 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 86400;
     }
+
+    # Proxy media uploads/downloads to backend
+    location /media/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # nginx defaults to 1 MB, which would 413 every attachment upload
+        client_max_body_size 17m;
+    }
 }
 ```
+
+Both media directives matter: without `location /media/` the uploads never reach the backend, and without `client_max_body_size 17m;` (16 MiB file + 16-byte GCM tag + headroom) nginx's 1 MB default rejects every upload with a 413.
 
 If the backend terminates TLS instead (option A), change `proxy_pass` to `https://127.0.0.1:3000`.
 

@@ -16,9 +16,11 @@ export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: Chat
   const {
     messages,
     sendMessage,
+    sendMediaMessage,
     groupMessages,
     groups,
     sendGroupMessage,
+    sendGroupMediaMessage,
     logout,
     connectionStatus,
   } = useChat();
@@ -54,6 +56,16 @@ export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: Chat
     return Promise.resolve(false);
   };
 
+  const handleAttach = (file: File): Promise<boolean> => {
+    if (selectedUser !== null) {
+      return sendMediaMessage(selectedUser, file);
+    }
+    if (selectedGroup !== null) {
+      return sendGroupMediaMessage(selectedGroup, file);
+    }
+    return Promise.resolve(false);
+  };
+
   const displayName = selectedGroupInfo?.name ?? selectedUser;
 
   return (
@@ -75,7 +87,11 @@ export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: Chat
       ) : (
         <>
           <MessageList messages={filteredMessages} />
-          <MessageInput onSend={handleSend} disabled={connectionStatus !== 'connected'} />
+          <MessageInput
+            onSend={handleSend}
+            onAttach={handleAttach}
+            disabled={connectionStatus !== 'connected'}
+          />
         </>
       )}
       {showMembers && selectedGroupInfo !== undefined && (

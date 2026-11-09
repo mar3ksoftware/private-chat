@@ -40,6 +40,28 @@ export type DecryptedMessage = {
   readonly timestamp: number;
   readonly isOwn: boolean;
   readonly decryptionFailed: boolean;
+  readonly media?: MediaDescriptor | null;
+};
+
+// ── Media types ──
+
+export type MediaTokenPayload = {
+  readonly token: string;
+};
+
+// Descriptor carried inside the E2EE plaintext of a media message (A.2).
+export type MediaDescriptor = {
+  readonly t: 'media';
+  readonly v: 1;
+  readonly fileId: string;
+  readonly key: string;
+  readonly iv: string;
+  readonly sha256: string;
+  readonly mime: string;
+  readonly size: number;
+  readonly w?: number;
+  readonly h?: number;
+  readonly name?: string;
 };
 
 // ── Group types ──
@@ -87,6 +109,7 @@ export type DecryptedGroupMessage = {
   readonly timestamp: number;
   readonly isOwn: boolean;
   readonly decryptionFailed: boolean;
+  readonly media?: MediaDescriptor | null;
 };
 
 export type GroupTargetPayload = {
@@ -160,6 +183,7 @@ export const CONSTANTS = {
   MIN_PIN_LENGTH: 4,
   MAX_PIN_LENGTH: 6,
   RATE_LIMIT_MAX: 10,
+  MAX_MEDIA_BYTES: 16 * 1024 * 1024,
 } as const;
 
 // ── Socket event maps ──
@@ -198,6 +222,7 @@ export type ServerToClientEvents = {
   'users:directory': (usernames: readonly string[]) => void;
   'group:member:removed': (payload: GroupMemberRemovedPayload) => void;
   'group:kick:tally': (payload: KickTally) => void;
+  'media:token': (payload: MediaTokenPayload) => void;
 };
 
 // ── Event name map ──
@@ -236,5 +261,6 @@ export const EVENTS = {
     USERS_DIRECTORY: 'users:directory',
     GROUP_MEMBER_REMOVED: 'group:member:removed',
     GROUP_KICK_TALLY: 'group:kick:tally',
+    MEDIA_TOKEN: 'media:token',
   },
 } as const;

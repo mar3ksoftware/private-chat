@@ -5,12 +5,19 @@
 // The controller is exercised through a fake SocketService, so no server or
 // real socket connection is needed; E2EE crypto runs for real.
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:private_chat_mobile/src/crypto/e2ee_session.dart';
+import 'package:private_chat_mobile/src/crypto/media_crypto.dart';
 import 'package:private_chat_mobile/src/models/models.dart';
 import 'package:private_chat_mobile/src/net/chat_events.dart';
+import 'package:private_chat_mobile/src/net/media_client.dart';
 import 'package:private_chat_mobile/src/net/socket_service.dart';
 import 'package:private_chat_mobile/src/state/chat_controller.dart';
+
+import 'ui_test_support.dart' show FakeMediaClient;
 
 /// In-memory [SocketService] that records emits and lets tests fire inbound
 /// events directly at the registered listeners.
@@ -255,6 +262,13 @@ class FakeSocketService implements SocketService {
     });
   }
 
+  @override
+  Unsubscribe onMediaToken(void Function(MediaTokenPayload payload) handler) {
+    return _register(ChatEvents.mediaToken, (data) {
+      handler(data! as MediaTokenPayload);
+    });
+  }
+
   // ── Connection lifecycle listeners ─────────────────────────────────────
 
   @override
@@ -309,13 +323,16 @@ const UserInfo bobInfo = UserInfo(
 
 void main() {
   late FakeSocketService fake;
+  late FakeMediaClient media;
   late ChatController controller;
 
   setUp(() {
     fake = FakeSocketService();
+    media = FakeMediaClient();
     controller = ChatController(
       socket: fake,
       e2ee: E2eeSession(),
+      mediaClient: media,
       // Keep errors on screen for the whole test; dispose() cancels the timer.
       errorClearDelay: const Duration(days: 1),
       sharedKeyTimeoutMs: 100,
@@ -1105,6 +1122,216 @@ void main() {
 
       expect(controller.directory, isEmpty);
       expect(controller.kickTallyFor('g-team'), isNull);
+    });
+  });
+
+  group('media', () {
+    test('media:token stores the bearer token and a later emit replaces it', () {
+      expect(controller.mediaToken, isNull);
+
+      fake.fire(ChatEvents.mediaToken, const MediaTokenPayload(token: 'token-one'));
+      expect(controller.mediaToken, 'token-one');
+
+      fake.fire(ChatEvents.mediaToken, const MediaTokenPayload(token: 'token-two'));
+      expect(controller.mediaToken, 'token-two');
+    });
+
+    test('sendMediaMessage uploads the ciphertext and sends a parseable envelope', () async {
+      signInAs('u-alice', 'alice');
+      final bob = E2eeSession();
+      await establishKeyWith(bob, 'bob');
+      fake.fire(ChatEvents.mediaToken, const MediaTokenPayload(token: 'tok-happy'));
+
+      final bytes = Uint8List.fromList(
+        List<int>.generate(64, (index) => index),
+      );
+      final sent = await controller.sendMediaMessage(
+        'bob',
+        bytes,
+        mime: 'video/mp4',
+        name: 'clip.mp4',
+      );
+      expect(sent, isTrue);
+      expect(controller.error, isNull);
+
+      expect(media.uploads, hasLength(1));
+      final upload = media.uploads.single;
+      expect(upload.token, 'tok-happy');
+
+      final payload =
+          fake.payloadsOf(ChatEvents.messageSend).single as EncryptedMessagePayload;
+      expect(payload.to, 'bob');
+      final envelopeJson =
+          await bob.decrypt('alice', payload.ciphertext, payload.iv);
+      final descriptor = MediaDescriptor.tryParse(envelopeJson);
+      expect(descriptor, isNotNull);
+      expect(base64Decode(descriptor!.key), hasLength(32));
+      expect(base64Decode(descriptor.iv), hasLength(12));
+      expect(descriptor.sha256, sha256Base64(upload.ciphertext));
+      expect(descriptor.fileId, upload.fileId);
+      expect(descriptor.mime, 'video/mp4');
+      expect(descriptor.size, bytes.length);
+      expect(descriptor.name, 'clip.mp4');
+    });
+
+    test('sendMediaMessage without a media token fails before uploading', () async {
+      signInAs('u-alice', 'alice');
+      final sent = await controller.sendMediaMessage(
+        'bob',
+        Uint8List.fromList(const <int>[1, 2, 3]),
+        mime: 'video/mp4',
+        name: 'clip.mp4',
+      );
+      expect(sent, isFalse);
+      expect(controller.error, 'Not connected. Please try again.');
+      expect(media.uploads, isEmpty);
+      expect(fake.countOf(ChatEvents.messageSend), 0);
+    });
+
+    test('a failed upload shows the error and sends no chat message', () async {
+      signInAs('u-alice', 'alice');
+      fake.fire(ChatEvents.mediaToken, const MediaTokenPayload(token: 'tok-fail'));
+      media.uploadOk = false;
+
+      final sent = await controller.sendMediaMessage(
+        'bob',
+        Uint8List.fromList(const <int>[1, 2, 3]),
+        mime: 'video/mp4',
+      );
+      expect(sent, isFalse);
+      expect(controller.error, 'Upload failed. Please try again.');
+      expect(media.uploads, hasLength(1));
+      expect(fake.countOf(ChatEvents.messageSend), 0);
+    });
+
+    test('oversized files and disallowed mimes use the contract error text', () async {
+      final oversized = Uint8List(maxMediaBytes + 1);
+      expect(
+        await controller.sendMediaMessage('bob', oversized, mime: 'video/mp4'),
+        isFalse,
+      );
+      expect(controller.error, 'File is too large (16 MB max).');
+      expect(media.uploads, isEmpty);
+
+      expect(
+        await controller.sendMediaMessage(
+          'bob',
+          Uint8List.fromList(const <int>[1, 2, 3]),
+          mime: 'text/plain',
+        ),
+        isFalse,
+      );
+      expect(controller.error, 'Unsupported file type.');
+      expect(media.uploads, isEmpty);
+      expect(fake.countOf(ChatEvents.messageSend), 0);
+    });
+
+    test('a decrypted envelope becomes message.media; raw text stays null', () async {
+      signInAs('u-alice', 'alice');
+      final bob = E2eeSession();
+      await establishKeyWith(bob, 'bob');
+
+      final descriptor = MediaDescriptor(
+        fileId: generateMediaId(),
+        key: base64Encode(randomBytes32()),
+        iv: base64Encode(randomIv12()),
+        sha256: base64Encode(List<int>.filled(32, 4)),
+        mime: 'image/png',
+        size: 128,
+        w: 32,
+        h: 32,
+        name: 'pic.png',
+      );
+      final encryptedEnvelope = await bob.encrypt(
+        'alice',
+        jsonEncode(descriptor.toJson()),
+      );
+      fake.fire(
+        ChatEvents.privateMessage,
+        PrivateMessage(
+          from: 'u-bob',
+          fromUsername: 'bob',
+          to: 'u-alice',
+          toUsername: 'alice',
+          ciphertext: encryptedEnvelope.ciphertext,
+          iv: encryptedEnvelope.iv,
+          timestamp: 500,
+        ),
+      );
+      await waitFor(() {
+        final messages = controller.messagesForPeer('bob');
+        return messages.isNotEmpty && !messages.first.decryptionFailed;
+      });
+      final mediaMessage = controller.messagesForPeer('bob').single;
+      expect(mediaMessage.media, isNotNull);
+      expect(mediaMessage.media!.fileId, descriptor.fileId);
+      expect(mediaMessage.media!.name, 'pic.png');
+
+      final encryptedText = await bob.encrypt('alice', 'plain old text');
+      fake.fire(
+        ChatEvents.privateMessage,
+        PrivateMessage(
+          from: 'u-bob',
+          fromUsername: 'bob',
+          to: 'u-alice',
+          toUsername: 'alice',
+          ciphertext: encryptedText.ciphertext,
+          iv: encryptedText.iv,
+          timestamp: 501,
+        ),
+      );
+      await waitFor(() {
+        final messages = controller.messagesForPeer('bob');
+        return messages.length == 2 && !messages.last.decryptionFailed;
+      });
+      expect(controller.messagesForPeer('bob').last.plaintext, 'plain old text');
+      expect(controller.messagesForPeer('bob').last.media, isNull);
+    });
+
+    test('loadMedia verifies, decrypts and caches results per fileId', () async {
+      fake.fire(ChatEvents.mediaToken, const MediaTokenPayload(token: 'tok-load'));
+
+      final key = randomBytes32();
+      final iv = randomIv12();
+      final plain = Uint8List.fromList(const <int>[10, 20, 30, 40, 50]);
+      final ciphertext = encryptBytes(plain, key, iv);
+
+      MediaDescriptor descriptorFor(String fileId) => MediaDescriptor(
+        fileId: fileId,
+        key: base64Encode(key),
+        iv: base64Encode(iv),
+        sha256: sha256Base64(ciphertext),
+        mime: 'video/mp4',
+        size: plain.length,
+      );
+
+      final ready = descriptorFor(generateMediaId());
+      media.downloadResult = MediaFetchResult.ready(ciphertext);
+      final first = await controller.loadMedia(ready);
+      expect(first.status, 'ready');
+      expect(first.bytes, orderedEquals(plain));
+
+      // The session cache serves the second request without a refetch.
+      final cached = await controller.loadMedia(ready);
+      expect(cached.status, 'ready');
+      expect(cached.bytes, orderedEquals(plain));
+      expect(media.downloads, hasLength(1));
+
+      // A 404-shaped result is cached as expired too.
+      final gone = descriptorFor(generateMediaId());
+      media.downloadResult = const MediaFetchResult.expired();
+      expect((await controller.loadMedia(gone)).status, 'expired');
+      expect((await controller.loadMedia(gone)).status, 'expired');
+      expect(media.downloads, hasLength(2));
+
+      // Tampered bytes fail the sha check before any decrypt attempt.
+      final tampered = descriptorFor(generateMediaId());
+      final badBytes = Uint8List.fromList(ciphertext);
+      badBytes[0] = badBytes[0] ^ 0xFF;
+      media.downloadResult = MediaFetchResult.ready(badBytes);
+      expect((await controller.loadMedia(tampered)).status, 'error');
+      expect((await controller.loadMedia(tampered)).status, 'error');
+      expect(media.downloads, hasLength(3));
     });
   });
 }

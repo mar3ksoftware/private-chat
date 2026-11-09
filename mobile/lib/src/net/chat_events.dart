@@ -16,6 +16,7 @@ abstract final class ChatEvents {
   static const groupKickVote = 'group:kick:vote';
 
   // Server -> client.
+  static const mediaToken = 'media:token';
   static const userJoined = 'user:joined';
   static const userLeft = 'user:left';
   static const privateMessage = 'private_message';

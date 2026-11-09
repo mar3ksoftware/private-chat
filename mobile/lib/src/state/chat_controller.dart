@@ -14,11 +14,14 @@
 //   * friendly, human-readable error text for backend reason codes.
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
 import '../crypto/e2ee_session.dart';
+import '../crypto/media_crypto.dart';
 import '../models/models.dart';
+import '../net/media_client.dart';
 import '../net/socket_service.dart';
 
 /// Connection lifecycle as observed by the UI.
@@ -102,6 +105,8 @@ class ChatController extends ChangeNotifier {
   ChatController({
     required this._socket,
     E2eeSession? e2ee,
+    this._mediaClient,
+    this._serverUrl,
     this._errorClearDelay = const Duration(seconds: 5),
     this._sharedKeyTimeoutMs = 3000,
   }) : _e2ee = e2ee ?? E2eeSession() {
@@ -120,12 +125,20 @@ class ChatController extends ChangeNotifier {
     return ChatController(
       socket: IoSocketService(url: serverUrl),
       e2ee: e2ee,
+      mediaClient: HttpMediaClient(baseUrl: serverUrl),
+      serverUrl: serverUrl,
       errorClearDelay: errorClearDelay,
       sharedKeyTimeoutMs: sharedKeyTimeoutMs,
     );
   }
 
   final SocketService _socket;
+
+  /// Transport for `PUT`/`GET /media`; null in tests that fake it.
+  final MediaClient? _mediaClient;
+
+  /// Backend origin used by [_mediaClient].
+  final String? _serverUrl;
 
   /// Owns the ECDH keypair and per-peer shared keys; replaced on logout.
   E2eeSession _e2ee;
@@ -151,6 +164,11 @@ class ChatController extends ChangeNotifier {
 
   _StoredCredentials? _credentials;
   String? _pendingGuest;
+
+  String? _mediaToken;
+  final Map<String, MediaFetchResult> _mediaByFileId = <String, MediaFetchResult>{};
+  final Map<String, Future<MediaFetchResult>> _mediaInFlight =
+      <String, Future<MediaFetchResult>>{};
 
   final Map<String, List<_Entry<DecryptedMessage>>> _privateByPeer =
       <String, List<_Entry<DecryptedMessage>>>{};
@@ -187,6 +205,13 @@ class ChatController extends ChangeNotifier {
 
   /// Transient, user-facing error text (cleared automatically).
   String? get error => _error;
+
+  /// Backend origin this controller talks to, when known.
+  String? get serverUrl => _serverUrl;
+
+  /// Bearer token for the `/media` HTTP endpoints (null until the server
+  /// sends `media:token`, cleared on logout).
+  String? get mediaToken => _mediaToken;
 
   E2eeSession get e2ee => _e2ee;
 
@@ -274,6 +299,9 @@ class ChatController extends ChangeNotifier {
     _groupByGroup.clear();
     _pendingPrivate.clear();
     _pendingGroup.clear();
+    _mediaToken = null;
+    _mediaByFileId.clear();
+    _mediaInFlight.clear();
     _me = null;
     _selectedPeer = null;
     _selectedGroup = null;
@@ -416,6 +444,229 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  // ── Media ──────────────────────────────────────────────────────────────
+
+  static const int _maxMediaBytes = 16 * 1024 * 1024;
+
+  static const Set<String> _mediaMimeAllowlist = <String>{
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'video/mp4',
+    'video/webm',
+    'video/quicktime',
+  };
+
+  void _handleMediaToken(MediaTokenPayload payload) {
+    _mediaToken = payload.token;
+    _notify();
+  }
+
+  /// Prepares and uploads a private attachment, then sends the descriptor
+  /// envelope through the existing [sendMessage] path (contract order:
+  /// validate → strip → size → encrypt → upload → envelope → send).
+  Future<bool> sendMediaMessage(
+    String toUsername,
+    Uint8List bytes, {
+    required String mime,
+    String? name,
+  }) {
+    return _sendMedia(
+      bytes: bytes,
+      mime: mime,
+      name: name,
+      send: (envelope) => sendMessage(toUsername, envelope),
+    );
+  }
+
+  /// Group counterpart of [sendMediaMessage]; the envelope is encrypted per
+  /// member by [sendGroupMessage] and the file is uploaded exactly once.
+  Future<bool> sendGroupMediaMessage(
+    String groupId,
+    Uint8List bytes, {
+    required String mime,
+    String? name,
+  }) {
+    return _sendMedia(
+      bytes: bytes,
+      mime: mime,
+      name: name,
+      send: (envelope) => sendGroupMessage(groupId, envelope),
+    );
+  }
+
+  Future<bool> _sendMedia({
+    required Uint8List bytes,
+    required String mime,
+    required String? name,
+    required Future<bool> Function(String envelope) send,
+  }) async {
+    if (bytes.length > _maxMediaBytes) {
+      _showError('File is too large (16 MB max).');
+      return false;
+    }
+    if (!_mediaMimeAllowlist.contains(mime)) {
+      _showError('Unsupported file type.');
+      return false;
+    }
+    final mediaClient = _mediaClient;
+    final token = _mediaToken;
+    if (mediaClient == null || token == null) {
+      _showError('Not connected. Please try again.');
+      return false;
+    }
+
+    var content = bytes;
+    int? width;
+    int? height;
+    if (mime.startsWith('image/')) {
+      final stripped = stripImageMetadata(bytes, mime);
+      if (stripped == null) {
+        _showError('Could not process that file.');
+        return false;
+      }
+      content = stripped;
+      final dimensions = await readImageSize(content);
+      if (dimensions == null) {
+        _showError('Could not process that file.');
+        return false;
+      }
+      width = dimensions.w;
+      height = dimensions.h;
+    }
+
+    final fileId = generateMediaId();
+    final key = randomBytes32();
+    final iv = randomIv12();
+    final ciphertext = encryptBytes(content, key, iv);
+    final sha256 = sha256Base64(ciphertext);
+
+    try {
+      final uploaded = await mediaClient.upload(
+        fileId: fileId,
+        ciphertext: ciphertext,
+        token: token,
+      );
+      if (!uploaded) {
+        _showError('Upload failed. Please try again.');
+        return false;
+      }
+    } on MediaUploadException catch (error) {
+      _showError(error.message);
+      return false;
+    } catch (_) {
+      _showError('Upload failed. Please try again.');
+      return false;
+    }
+
+    final normalizedName = _normalizeMediaName(name);
+    final envelopeParts = <String, Object?>{
+      't': 'media',
+      'v': 1,
+      'fileId': fileId,
+      'key': base64Encode(key),
+      'iv': base64Encode(iv),
+      'sha256': sha256,
+      'mime': mime,
+      'size': content.length,
+    };
+    if (width != null) envelopeParts['w'] = width;
+    if (height != null) envelopeParts['h'] = height;
+    if (normalizedName != null) envelopeParts['name'] = normalizedName;
+    return send(jsonEncode(envelopeParts));
+  }
+
+  /// Basename with control characters removed, truncated to 120 chars;
+  /// null when nothing usable remains (the descriptor then omits `name`).
+  static String? _normalizeMediaName(String? name) {
+    if (name == null) return null;
+    var base = name;
+    final slash = base.lastIndexOf(RegExp(r'[/\\]'));
+    if (slash != -1) base = base.substring(slash + 1);
+
+    final cleaned = StringBuffer();
+    for (final rune in base.runes) {
+      if (rune < 0x20 || (rune >= 0x7F && rune <= 0x9F)) continue;
+      cleaned.writeCharCode(rune);
+    }
+    var result = cleaned.toString();
+    if (result.isEmpty) return null;
+    if (result.length > 120) {
+      result = result.substring(0, 120);
+      final last = result.codeUnitAt(result.length - 1);
+      if (last >= 0xD800 && last <= 0xDBFF) {
+        result = result.substring(0, 119);
+      }
+    }
+    return result;
+  }
+
+  /// Fetches, verifies and decrypts one attachment, cached per `fileId` for
+  /// the session (ready/expired/integrity results; auth and network failures
+  /// stay uncached so a later render can retry). [descriptor] is never
+  /// decrypted into bytes before its ciphertext hash matches.
+  Future<MediaFetchResult> loadMedia(MediaDescriptor descriptor) {
+    final cached = _mediaByFileId[descriptor.fileId];
+    if (cached != null) return Future<MediaFetchResult>.value(cached);
+    final pending = _mediaInFlight[descriptor.fileId];
+    if (pending != null) return pending;
+
+    final future = _fetchMedia(descriptor);
+    _mediaInFlight[descriptor.fileId] = future;
+    unawaited(
+      future.whenComplete(() {
+        if (identical(_mediaInFlight[descriptor.fileId], future)) {
+          _mediaInFlight.remove(descriptor.fileId);
+        }
+      }),
+    );
+    return future;
+  }
+
+  Future<MediaFetchResult> _fetchMedia(MediaDescriptor descriptor) async {
+    final mediaClient = _mediaClient;
+    final token = _mediaToken;
+    if (mediaClient == null || token == null) {
+      // Bubble-local state only: a missing token never toasts.
+      return const MediaFetchResult.error();
+    }
+
+    final fetched = await mediaClient.download(
+      fileId: descriptor.fileId,
+      token: token,
+    );
+    if (fetched.status == 'expired') {
+      _mediaByFileId[descriptor.fileId] = fetched;
+      return fetched;
+    }
+    final ciphertext = fetched.bytes;
+    if (fetched.status != 'ready' || ciphertext == null) {
+      return const MediaFetchResult.error();
+    }
+
+    if (sha256Base64(ciphertext) != descriptor.sha256) {
+      return _cacheFailure(descriptor.fileId);
+    }
+    try {
+      final plain = decryptBytes(
+        ciphertext,
+        base64Decode(descriptor.key),
+        base64Decode(descriptor.iv),
+      );
+      final result = MediaFetchResult.ready(plain);
+      _mediaByFileId[descriptor.fileId] = result;
+      return result;
+    } catch (_) {
+      return _cacheFailure(descriptor.fileId);
+    }
+  }
+
+  MediaFetchResult _cacheFailure(String fileId) {
+    const failure = MediaFetchResult.error();
+    _mediaByFileId[fileId] = failure;
+    return failure;
+  }
+
   // ── Errors ─────────────────────────────────────────────────────────────
 
   /// Shows [message] and clears it automatically after the error delay.
@@ -469,6 +720,7 @@ class ChatController extends ChangeNotifier {
       _socket.onDeliveryFailed(_handleDeliveryFailed),
       _socket.onMessageRejected(_handleMessageRejected),
       _socket.onError(_handleErrorEvent),
+      _socket.onMediaToken(_handleMediaToken),
     ]);
   }
 
@@ -710,6 +962,7 @@ class ChatController extends ChangeNotifier {
           isOwn: pending.isOwn,
           plaintext: plaintext,
           decryptionFailed: false,
+          media: MediaDescriptor.tryParse(plaintext),
         ),
       );
     } catch (error) {
@@ -738,6 +991,7 @@ class ChatController extends ChangeNotifier {
     required bool isOwn,
     required String plaintext,
     required bool decryptionFailed,
+    MediaDescriptor? media,
   }) {
     return DecryptedMessage(
       from: wire.from,
@@ -748,6 +1002,7 @@ class ChatController extends ChangeNotifier {
       timestamp: wire.timestamp,
       isOwn: isOwn,
       decryptionFailed: decryptionFailed,
+      media: media,
     );
   }
 
@@ -830,6 +1085,7 @@ class ChatController extends ChangeNotifier {
           isOwn: pending.isOwn,
           plaintext: plaintext,
           decryptionFailed: false,
+          media: MediaDescriptor.tryParse(plaintext),
         ),
       );
     } catch (error) {
@@ -855,6 +1111,7 @@ class ChatController extends ChangeNotifier {
     required bool isOwn,
     required String plaintext,
     required bool decryptionFailed,
+    MediaDescriptor? media,
   }) {
     return DecryptedGroupMessage(
       groupId: wire.groupId,
@@ -864,6 +1121,7 @@ class ChatController extends ChangeNotifier {
       timestamp: wire.timestamp,
       isOwn: isOwn,
       decryptionFailed: decryptionFailed,
+      media: media,
     );
   }
 

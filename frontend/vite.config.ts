@@ -12,6 +12,9 @@ export default defineConfig({
         target: 'http://localhost:3000',
         ws: true,
       },
+      '/media': {
+        target: 'http://localhost:3000',
+      },
     },
   },
 });

@@ -9,6 +9,7 @@ import { AccountStore } from './account-store';
 import { E2eeSession } from './e2ee-session';
 import { GroupStore } from './group-store';
 import { KickVoteStore } from './kick-vote-store';
+import { MediaAuth } from './media-auth';
 import { RateLimiterRegistry } from './rate-limiter';
 import { createServer } from './server';
 import type {
@@ -20,6 +21,7 @@ import type {
   GroupMessage,
   KickTallyPayload,
   LoginResult,
+  MediaTokenPayload,
   MessageRejectedPayload,
   PrivateMessage,
   RegisterResult,
@@ -130,6 +132,7 @@ describe('Socket.io Server', () => {
   let groupStore: GroupStore;
   let userDirectory: UserDirectory;
   let kickVoteStore: KickVoteStore;
+  let mediaAuth: MediaAuth;
   let bunServer: ReturnType<typeof Bun.serve>;
   let port: number;
   const clients: TestClient[] = [];
@@ -145,6 +148,7 @@ describe('Socket.io Server', () => {
     groupStore = new GroupStore();
     userDirectory = new UserDirectory(db);
     kickVoteStore = new KickVoteStore();
+    mediaAuth = new MediaAuth();
     createServer(
       io,
       userRegistry,
@@ -153,6 +157,7 @@ describe('Socket.io Server', () => {
       groupStore,
       userDirectory,
       kickVoteStore,
+      mediaAuth,
       pino({ level: 'silent' }),
     );
 
@@ -181,6 +186,7 @@ describe('Socket.io Server', () => {
     bunServer.stop();
     userRegistry.destroy();
     kickVoteStore.destroy();
+    mediaAuth.destroy();
     rateLimiters.destroy();
     accountStore.destroy();
     groupStore.destroy();
@@ -1086,5 +1092,84 @@ describe('Socket.io Server', () => {
     }
     await delay(400);
     expect(errors).toContain('Rate limit exceeded');
+  });
+
+  test('32: join emits media:token with a 64-hex token', async () => {
+    const client = createClient(port);
+    clients.push(client);
+    await connect(client);
+
+    const tokenPromise = waitEvent<MediaTokenPayload>(client, EVENTS.SERVER.MEDIA_TOKEN);
+    await join(client, 'mediajoin');
+
+    const { token } = await tokenPromise;
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(token).toHaveLength(64);
+  });
+
+  test('33: register and login emit media:token', async () => {
+    const registrant = createClient(port);
+    clients.push(registrant);
+    await connect(registrant);
+
+    const registerTokenPromise = waitEvent<MediaTokenPayload>(
+      registrant,
+      EVENTS.SERVER.MEDIA_TOKEN,
+    );
+    const registerPromise = waitEvent<Extract<RegisterResult, { kind: 'register_success' }>>(
+      registrant,
+      EVENTS.SERVER.REGISTER_SUCCESS,
+    );
+    registrant.emit(EVENTS.CLIENT.USER_REGISTER, {
+      username: 'mediaacct',
+      password: 'password123',
+    });
+    const registered = await registerPromise;
+    expect(registered.kind).toBe('register_success');
+    const registerToken = (await registerTokenPromise).token;
+    expect(registerToken).toMatch(/^[0-9a-f]{64}$/);
+
+    const loginClient = createClient(port);
+    clients.push(loginClient);
+    await connect(loginClient);
+
+    const loginTokenPromise = waitEvent<MediaTokenPayload>(loginClient, EVENTS.SERVER.MEDIA_TOKEN);
+    const loginPromise = waitEvent<Extract<LoginResult, { kind: 'login_success' }>>(
+      loginClient,
+      EVENTS.SERVER.LOGIN_SUCCESS,
+    );
+    loginClient.emit(EVENTS.CLIENT.USER_LOGIN, {
+      username: 'mediaacct',
+      password: 'password123',
+    });
+    const loggedIn = await loginPromise;
+    expect(loggedIn.kind).toBe('login_success');
+    const loginToken = (await loginTokenPromise).token;
+    expect(loginToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(loginToken).not.toBe(registerToken);
+  });
+
+  test('34: successive joins issue different media tokens', async () => {
+    const first = createClient(port);
+    clients.push(first);
+    await connect(first);
+
+    const firstTokenPromise = waitEvent<MediaTokenPayload>(first, EVENTS.SERVER.MEDIA_TOKEN);
+    await join(first, 'mediarejoin');
+    const firstToken = (await firstTokenPromise).token;
+    expect(firstToken).toMatch(/^[0-9a-f]{64}$/);
+
+    first.disconnect();
+    await delay(50);
+
+    const second = createClient(port);
+    clients.push(second);
+    await connect(second);
+
+    const secondTokenPromise = waitEvent<MediaTokenPayload>(second, EVENTS.SERVER.MEDIA_TOKEN);
+    await join(second, 'mediarejoin');
+    const secondToken = (await secondTokenPromise).token;
+    expect(secondToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(secondToken).not.toBe(firstToken);
   });
 });
