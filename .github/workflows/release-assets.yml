@@ -1,0 +1,99 @@
+name: Release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the builds to
+        default: v1.1.0
+        required: true
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Get dependencies
+        run: flutter pub get
+        working-directory: mobile
+
+      - name: Build release
+        run: flutter build windows --release
+        working-directory: mobile
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "Scattered-Keyhole-${{ github.event.release.tag_name || inputs.tag }}-windows-x64.zip"
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath $name -Force
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || inputs.tag }}
+          files: mobile/Scattered-Keyhole-${{ github.event.release.tag_name || inputs.tag }}-windows-x64.zip
+
+  build-unix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Install Linux desktop deps
+        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+
+      - name: Enable Linux desktop
+        run: flutter config --enable-linux-desktop
+
+      - name: Get dependencies
+        run: flutter pub get
+        working-directory: mobile
+
+      - name: Build Android APK
+        run: flutter build apk --release
+        working-directory: mobile
+
+      - name: Build Linux bundle
+        run: flutter build linux --release
+        working-directory: mobile
+
+      - name: Package
+        run: |
+          cd mobile
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          cp build/app/outputs/flutter-apk/app-release.apk "Scattered-Keyhole-$TAG-android.apk"
+          stage="Scattered-Keyhole-$TAG-linux-x64"
+          mkdir -p "$stage"
+          cp -a build/linux/x64/release/bundle/. "$stage/"
+          tar -cJf "Scattered-Keyhole-$TAG-linux-x64.tar.xz" "$stage"
+          rm -rf "$stage"
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || inputs.tag }}
+          files: |
+            mobile/Scattered-Keyhole-${{ github.event.release.tag_name || inputs.tag }}-android.apk
+            mobile/Scattered-Keyhole-${{ github.event.release.tag_name || inputs.tag }}-linux-x64.tar.xz

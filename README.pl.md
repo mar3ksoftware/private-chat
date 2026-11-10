@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-Android%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20Web-4f46e5)](#setup)
 [![Storage](https://img.shields.io/badge/messages%20on%20disk-zero-10b981)](#data--privacy)
 [![E2EE](https://img.shields.io/badge/E2EE-P--256%20%C2%B7%20AES--256--GCM-a855f7)](#how-e2ee-works)
-[![Windows build](https://img.shields.io/github/actions/workflow/status/mar3ksoftware/scattered-keyhole/windows-build.yml)](https://github.com/mar3ksoftware/scattered-keyhole/actions/workflows/windows-build.yml)
+[![Release assets](https://img.shields.io/github/actions/workflow/status/mar3ksoftware/scattered-keyhole/release-assets.yml)](https://github.com/mar3ksoftware/scattered-keyhole/actions/workflows/release-assets.yml)
 
 **Chat through a keyhole. Leave nothing behind.**
 
