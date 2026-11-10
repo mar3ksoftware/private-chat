@@ -10,13 +10,13 @@
 
 **Chat through a keyhole. Leave nothing behind.**
 
-Scattered Keyhole is a zero-persistence end-to-end encrypted chat with direct messages, groups, and encrypted photo/video sharing. The server is a blind relay: it forwards ciphertext, presence, and group membership, never writes messages to disk, wipes ephemeral media after 24 h, and keeps accounts in SQLite only. Built with Bun, Socket.io, React, Web Crypto, and Flutter.
+Scattered Keyhole is a zero-persistence, end-to-end encrypted chat with direct messages, groups, and encrypted photo and video sharing. The server is a blind relay: it forwards ciphertext, presence, and group membership, never writes messages to disk, wipes ephemeral media after 24 hours, and keeps account records in SQLite. The stack is Bun, Socket.io, React, Web Crypto, and Flutter.
 
-Messages are encrypted on the sender's device with ECDH P-256 → HKDF-SHA256 → AES-256-GCM and decrypted only on the receiver's device — the server never sees plaintext.
+Messages are encrypted on the sender's device with ECDH P-256 → HKDF-SHA256 → AES-256-GCM and decrypted only on the receiver's — the server never sees plaintext.
 
 **Private Chat** remains available as a [legacy release](https://github.com/mar3ksoftware/scattered-keyhole/releases/tag/v1.0.0).
 
-The project has three components: a Bun backend (port 3000), a React web app, and a Flutter app for Linux desktop and Android.
+The repository ships three components: a Bun backend on port 3000, a React web app, and a Flutter app for Linux desktop and Android.
 
 ## Features
 
@@ -24,13 +24,13 @@ The project has three components: a Bun backend (port 3000), a React web app, an
 - **Direct and group messages** — offline group members keep their membership and pick the group up on rejoin
 - **Group administration** — admins add and remove members; the group creator cannot be removed or kicked
 - **Vote-to-kick** — members vote to remove someone; a simple majority (`floor(members / 2) + 1`) within 60 s passes the vote
-- **Guest and account auth** — join as a guest, or register/log in with a password and an optional 4–6 digit PIN
-- **Encrypted media sharing** — photos and videos encrypted on the device; the server holds opaque blobs in memory with a 24 h TTL
+- **Guest and account auth** — join as a guest, or register and log in with a password plus an optional 4–6 digit PIN
+- **Encrypted media sharing** — photos and videos are encrypted on the device; the server holds opaque blobs in memory with a 24 h TTL
 - **Optional TLS/HTTPS** — the backend can terminate TLS itself, or run plain behind a reverse proxy
-- **Configurable server address** — the Flutter app can point at any LAN host or domain from the auth screen
-- **Zero chat persistence** — no localStorage, cookies, or server-side message storage
+- **Configurable server address** — point the Flutter app at any LAN host or domain from the auth screen
+- **Zero chat persistence** — no localStorage, no cookies, no server-side message storage
 - **Rate limiting** — token bucket, 10 requests/s per socket
-- **Responsive UI** — split-pane on desktop, stacked on mobile; dark glass theme
+- **Responsive UI** — split pane on desktop, stacked views on mobile, dark glass theme
 
 ## Setup
 
@@ -47,7 +47,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-Installs dependencies and starts the backend at http://localhost:3000 and the dev frontend at http://localhost:5173. Ctrl+C stops both. The Flutter app is set up separately (see below).
+Installs dependencies, starts the backend on http://localhost:3000, and starts the dev frontend on http://localhost:5173. Ctrl+C stops both. The Flutter app is set up separately, as described below.
 
 ### Backend
 
@@ -483,13 +483,13 @@ The suite drives real `ChatController` clients against the running backend and v
 
 ## Project Constraints
 
-- **No chat persistence** — Messages exist only in memory during the session
-- **No localStorage/cookies** — Chat state never touches browser storage
+- **No chat persistence** — messages exist only in memory during the session
+- **No localStorage/cookies** — chat state never touches browser storage
 - **Accounts only persistence** — SQLite stores username, password hash, optional PIN hash
 - **TypeScript strict** — `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`
-- **No `any`** — Zero tolerance for `any`, `!`, or `@ts-ignore`
-- **Under 250 LOC** — Every production file stays under 250 lines
-- **Named exports only** — No `export default` anywhere
+- **No `any`** — zero tolerance for `any`, `!`, or `@ts-ignore`
+- **Under 250 LOC** — every production file stays under 250 lines
+- **Named exports only** — no `export default` anywhere
 
 ## License
 
