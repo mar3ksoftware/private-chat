@@ -1,10 +1,20 @@
-# Private Chat
+# Scattered Keyhole
 
 > **Polski:** [README.pl.md](README.pl.md) — polskie tlumaczenie tego dokumentu
 
-End-to-end encrypted chat with direct messages, groups, and encrypted photo/video sharing. Built with Bun, Socket.io, React, Web Crypto, and Flutter.
+[![Release](https://img.shields.io/github/v/release/mar3ksoftware/scattered-keyhole?label=APK)](https://github.com/mar3ksoftware/scattered-keyhole/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-Android%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20Web-4f46e5)](#setup)
+[![Storage](https://img.shields.io/badge/messages%20on%20disk-zero-10b981)](#data--privacy)
+[![E2EE](https://img.shields.io/badge/E2EE-P--256%20%C2%B7%20AES--256--GCM-a855f7)](#how-e2ee-works)
+[![Windows build](https://img.shields.io/github/actions/workflow/status/mar3ksoftware/scattered-keyhole/windows-build.yml)](https://github.com/mar3ksoftware/scattered-keyhole/actions/workflows/windows-build.yml)
 
-Messages are never stored on disk. Accounts are the only persistent data (SQLite). Every message is encrypted on the sender's device with ECDH P-256 → HKDF-SHA256 → AES-256-GCM and decrypted only on the receiver's device — the server relays ciphertext, presence, and group membership.
+**Chat through a keyhole. Leave nothing behind.**
+
+Scattered Keyhole is a zero-persistence end-to-end encrypted chat with direct messages, groups, and encrypted photo/video sharing. The server is a blind relay: it forwards ciphertext, presence, and group membership, never writes messages to disk, wipes ephemeral media after 24 h, and keeps accounts in SQLite only. Built with Bun, Socket.io, React, Web Crypto, and Flutter.
+
+Messages are encrypted on the sender's device with ECDH P-256 → HKDF-SHA256 → AES-256-GCM and decrypted only on the receiver's device — the server never sees plaintext.
+
+**Private Chat** remains available as a [legacy release](https://github.com/mar3ksoftware/scattered-keyhole/releases/tag/v1.0.0).
 
 The project has three components: a Bun backend (port 3000), a React web app, and a Flutter app for Linux desktop and Android.
 
@@ -113,7 +123,7 @@ Certificates are always provisioned externally (certbot, your CA, `openssl`) —
 **Option A — the backend terminates TLS.** Set both variables and Bun serves `https`/`wss` directly on `PORT` (unset both to keep plain `http`, the default):
 
 ```bash
-TLS_CERT_FILE=/etc/private-chat/fullchain.pem TLS_KEY_FILE=/etc/private-chat/privkey.pem bun run src/index.ts
+TLS_CERT_FILE=/etc/scattered-keyhole/fullchain.pem TLS_KEY_FILE=/etc/scattered-keyhole/privkey.pem bun run src/index.ts
 ```
 
 Both variables must be set together; setting only one fails fast with `TLS_CERT_FILE and TLS_KEY_FILE must be set together`.
@@ -216,9 +226,9 @@ PORT=3000 LOG_LEVEL=warn bun run src/index.ts
 
 ```bash
 # systemd example
-cat > /etc/systemd/system/private-chat.service << 'EOF'
+cat > /etc/systemd/system/scattered-keyhole.service << 'EOF'
 [Unit]
-Description=Private Chat Backend
+Description=Scattered Keyhole Backend
 After=network.target
 
 [Service]
@@ -229,22 +239,24 @@ ExecStart=/usr/bin/bun run src/index.ts
 Restart=on-failure
 Environment=PORT=3000
 Environment=LOG_LEVEL=warn
-Environment=DB_PATH=/var/lib/private-chat/accounts.db
+Environment=DB_PATH=/var/lib/scattered-keyhole/accounts.db
 # Optional TLS (see TLS / HTTPS with a domain)
-# Environment=TLS_CERT_FILE=/etc/private-chat/fullchain.pem
-# Environment=TLS_KEY_FILE=/etc/private-chat/privkey.pem
+# Environment=TLS_CERT_FILE=/etc/scattered-keyhole/fullchain.pem
+# Environment=TLS_KEY_FILE=/etc/scattered-keyhole/privkey.pem
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-systemctl enable --now private-chat
+systemctl enable --now scattered-keyhole
 ```
+
+Existing deployments must rename their unit file and paths to match the new name (`private-chat.service` → `scattered-keyhole.service`, `/etc/private-chat` → `/etc/scattered-keyhole`, `/var/lib/private-chat` → `/var/lib/scattered-keyhole`).
 
 ## Architecture
 
 ```
-Private Chat/
+Scattered Keyhole/
   backend/     Bun + Socket.io server (port 3000)
   frontend/    React + Vite + Tailwind CSS (dev port 5173)
   mobile/      Flutter app (Linux desktop + Android)
@@ -348,7 +360,7 @@ After a successful join, register, or login the server sends a snapshot: `active
 
 1. **Key generation:** each client generates an ECDH P-256 key pair on connect
 2. **Key exchange:** after the `active_users` snapshot a client sends its public key to every active user; when someone new joins, the existing clients send theirs to the newcomer. The server only relays.
-3. **Key derivation:** each side derives a shared AES-256-GCM key via HKDF-SHA256 (empty salt, info `private-chat-e2ee-v1`)
+3. **Key derivation:** each side derives a shared AES-256-GCM key via HKDF-SHA256 (empty salt, info `scattered-keyhole-e2ee-v1`)
 4. **Encryption:** messages are encrypted client-side before transmission
 5. **Decryption:** messages are decrypted client-side after reception
 
