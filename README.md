@@ -1,5 +1,7 @@
 # Private Chat
 
+> **Polski:** [README.pl.md](README.pl.md) — polskie tlumaczenie tego dokumentu
+
 End-to-end encrypted chat with direct messages, groups, and encrypted photo/video sharing. Built with Bun, Socket.io, React, Web Crypto, and Flutter.
 
 Messages are never stored on disk. Accounts are the only persistent data (SQLite). Every message is encrypted on the sender's device with ECDH P-256 → HKDF-SHA256 → AES-256-GCM and decrypted only on the receiver's device — the server relays ciphertext, presence, and group membership.

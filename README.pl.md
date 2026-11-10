@@ -1,5 +1,7 @@
 # Private Chat
 
+> **English:** [README.md](README.md) - angielski oryginal tego dokumentu
+
 Szyfrowany end-to-end czat z wiadomosciami prywatnymi, grupami i szyfrowanym udostepnianiem zdjec/wideo. Zbudowany na Bun, Socket.io, React, Web Crypto i Flutterze.
 
 Wiadomosci nigdy nie sa zapisywane na dysku. Jedynymi danymi trwalymi sa konta (SQLite). Kazda wiadomosc jest szyfrowana na urzadzeniu nadawcy za pomoca ECDH P-256 -> HKDF-SHA256 -> AES-256-GCM i deszyfrowana tylko na urzadzeniu odbiorcy - serwer przekazuje szyfr, obecnosc i czlonkostwo w grupach.
