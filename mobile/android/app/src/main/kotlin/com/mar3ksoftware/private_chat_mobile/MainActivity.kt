@@ -10,7 +10,7 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "private_chat/media")
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "scattered_keyhole/media")
             .setMethodCallHandler { call, result ->
                 if (call.method == "openFile") {
                     val path = call.argument<String>("path")

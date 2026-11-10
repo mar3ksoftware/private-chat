@@ -4,10 +4,10 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:private_chat_mobile/src/models/models.dart';
-import 'package:private_chat_mobile/src/net/chat_events.dart';
-import 'package:private_chat_mobile/src/state/chat_controller.dart';
-import 'package:private_chat_mobile/src/ui/screens/chat_shell.dart';
+import 'package:scattered_keyhole/src/models/models.dart';
+import 'package:scattered_keyhole/src/net/chat_events.dart';
+import 'package:scattered_keyhole/src/state/chat_controller.dart';
+import 'package:scattered_keyhole/src/ui/screens/chat_shell.dart';
 
 import 'ui_test_support.dart';
 

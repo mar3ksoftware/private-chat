@@ -20,7 +20,7 @@ export function AuthScreen() {
       <div className="flex min-h-full flex-col px-4 py-6 sm:py-8">
         <div className="glass m-auto w-full max-w-sm rounded-2xl p-5 sm:p-8">
           <div className="mb-6 text-center sm:mb-8">
-            <h1 className="text-2xl font-bold text-zinc-50">Private Chat</h1>
+            <h1 className="text-2xl font-bold text-zinc-50">Scattered Keyhole</h1>
             <p className="mt-1 text-sm text-zinc-400">End-to-end encrypted</p>
           </div>
 

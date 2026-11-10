@@ -8,12 +8,12 @@ export function createLogger(env: typeof process.env = process.env): Logger {
   const isProduction = env['NODE_ENV'] === 'production';
 
   if (isProduction) {
-    return pino({ name: 'private-chat', level });
+    return pino({ name: 'scattered-keyhole', level });
   }
 
   try {
     return pino({
-      name: 'private-chat',
+      name: 'scattered-keyhole',
       level,
       transport: {
         target: 'pino-pretty',
@@ -21,7 +21,7 @@ export function createLogger(env: typeof process.env = process.env): Logger {
       },
     });
   } catch {
-    return pino({ name: 'private-chat', level });
+    return pino({ name: 'scattered-keyhole', level });
   }
 }
 

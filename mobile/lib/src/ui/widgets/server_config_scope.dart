@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// Carries the active server address and the "user saved a new one" callback
-/// from `PrivateChatApp` down to the auth screen (which lives behind the
+/// from `ScatteredKeyholeApp` down to the auth screen (which lives behind the
 /// navigator, so the scope sits *above* `MaterialApp`).
 ///
 /// The scope only exists while the app owns its controller; when a controller

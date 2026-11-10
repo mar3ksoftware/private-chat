@@ -8,13 +8,13 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:private_chat_mobile/main.dart';
-import 'package:private_chat_mobile/src/crypto/e2ee_session.dart';
-import 'package:private_chat_mobile/src/models/models.dart';
-import 'package:private_chat_mobile/src/net/chat_events.dart';
-import 'package:private_chat_mobile/src/net/media_client.dart';
-import 'package:private_chat_mobile/src/net/socket_service.dart';
-import 'package:private_chat_mobile/src/state/chat_controller.dart';
+import 'package:scattered_keyhole/main.dart';
+import 'package:scattered_keyhole/src/crypto/e2ee_session.dart';
+import 'package:scattered_keyhole/src/models/models.dart';
+import 'package:scattered_keyhole/src/net/chat_events.dart';
+import 'package:scattered_keyhole/src/net/media_client.dart';
+import 'package:scattered_keyhole/src/net/socket_service.dart';
+import 'package:scattered_keyhole/src/state/chat_controller.dart';
 
 /// In-memory [SocketService] that records emits and lets tests fire inbound
 /// events directly at the registered listeners. Mirrors the fake used by
@@ -394,7 +394,7 @@ ChatController makeController(FakeSocketService fake) {
 
 /// Pumps the full app around [controller].
 Future<void> pumpApp(WidgetTester tester, ChatController controller) async {
-  await tester.pumpWidget(PrivateChatApp(controller: controller));
+  await tester.pumpWidget(ScatteredKeyholeApp(controller: controller));
   await tester.pump();
 }
 

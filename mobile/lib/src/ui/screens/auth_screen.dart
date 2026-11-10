@@ -66,7 +66,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                       const SizedBox(height: 12),
                       const Text(
-                        'Private Chat',
+                        'Scattered Keyhole',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 25,

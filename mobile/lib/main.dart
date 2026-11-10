@@ -17,17 +17,17 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Light system icons over the dark app surfaces.
   SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
-  // The persisted server address is resolved inside `PrivateChatApp`, which
+  // The persisted server address is resolved inside `ScatteredKeyholeApp`, which
   // shows a minimal splash until it is known — the first frame paints right
   // away instead of blocking on the preference read.
-  runApp(const PrivateChatApp());
+  runApp(const ScatteredKeyholeApp());
 }
 
 /// Root widget: owns (or reuses an injected) [ChatController] and provides
 /// the dark theme. Widget tests inject a controller backed by a fake
 /// [SocketService] so no real connection is opened.
-class PrivateChatApp extends StatefulWidget {
-  const PrivateChatApp({
+class ScatteredKeyholeApp extends StatefulWidget {
+  const ScatteredKeyholeApp({
     super.key,
     this.controller,
     this.serverUrl,
@@ -47,10 +47,10 @@ class PrivateChatApp extends StatefulWidget {
   final ControllerFactory? controllerFactory;
 
   @override
-  State<PrivateChatApp> createState() => _PrivateChatAppState();
+  State<ScatteredKeyholeApp> createState() => _ScatteredKeyholeAppState();
 }
 
-class _PrivateChatAppState extends State<PrivateChatApp> {
+class _ScatteredKeyholeAppState extends State<ScatteredKeyholeApp> {
   /// The controller in use, or null while the persisted address is still
   /// loading (the splash frame).
   ChatController? _controller;
@@ -128,7 +128,7 @@ class _PrivateChatAppState extends State<PrivateChatApp> {
       url: _serverUrl ?? SocketService.defaultUrl,
       onServerSaved: _handleServerSaved,
       child: MaterialApp(
-        title: 'Private Chat',
+        title: 'Scattered Keyhole',
         debugShowCheckedModeBanner: false,
         theme: buildAppTheme(),
         home: controller == null

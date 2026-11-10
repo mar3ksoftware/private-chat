@@ -5,10 +5,10 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:private_chat_mobile/main.dart';
-import 'package:private_chat_mobile/src/net/server_config.dart';
-import 'package:private_chat_mobile/src/net/socket_service.dart';
-import 'package:private_chat_mobile/src/state/chat_controller.dart';
+import 'package:scattered_keyhole/main.dart';
+import 'package:scattered_keyhole/src/net/server_config.dart';
+import 'package:scattered_keyhole/src/net/socket_service.dart';
+import 'package:scattered_keyhole/src/state/chat_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'ui_test_support.dart';
@@ -69,7 +69,7 @@ void main() {
     /// resolves the persisted one (splash frame) before building a controller.
     Future<void> pumpAppUnderTest(WidgetTester tester) async {
       usePhoneSize(tester);
-      await tester.pumpWidget(PrivateChatApp(controllerFactory: factory));
+      await tester.pumpWidget(ScatteredKeyholeApp(controllerFactory: factory));
       await tester.pumpAndSettle();
     }
 

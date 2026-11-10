@@ -14,7 +14,7 @@ void main() {
 
     await pumpApp(tester, controller);
 
-    expect(find.text('Private Chat'), findsWidgets);
+    expect(find.text('Scattered Keyhole'), findsWidgets);
     expect(find.text('End-to-end encrypted'), findsOneWidget);
     expect(find.widgetWithText(ElevatedButton, 'Sign In'), findsOneWidget);
     expect(find.text('Register'), findsOneWidget);

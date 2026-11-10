@@ -38,11 +38,11 @@ jobs:
         working-directory: mobile
 
       - name: Package
-        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath PrivateChat-Windows-x64.zip -Force
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath Scattered-Keyhole-Windows-x64.zip -Force
         working-directory: mobile
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name || inputs.tag }}
-          files: mobile/PrivateChat-Windows-x64.zip
+          files: mobile/Scattered-Keyhole-Windows-x64.zip

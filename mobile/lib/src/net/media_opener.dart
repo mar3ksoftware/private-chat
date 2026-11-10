@@ -10,7 +10,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 abstract final class MediaOpener {
-  static const MethodChannel _channel = MethodChannel('private_chat/media');
+  static const MethodChannel _channel = MethodChannel('scattered_keyhole/media');
 
   /// Writes [bytes] under `<systemTemp>/media/` and opens them externally
   /// with [mime]. Returns false when the file cannot be written or opened.

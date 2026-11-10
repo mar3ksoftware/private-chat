@@ -88,7 +88,7 @@ class _ConversationListState extends State<ConversationList> {
           const SizedBox(width: 8),
           const Expanded(
             child: Text(
-              'Private Chat',
+              'Scattered Keyhole',
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 17,

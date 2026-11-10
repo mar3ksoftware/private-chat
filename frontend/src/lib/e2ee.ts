@@ -1,7 +1,7 @@
 // ── E2EE crypto primitives (Web Crypto API) ────────────────────────────
 // Client-side only — uses globalThis.crypto. Works in browsers.
 
-const HKDF_INFO = new TextEncoder().encode('private-chat-e2ee-v1');
+const HKDF_INFO = new TextEncoder().encode('scattered-keyhole-e2ee-v1');
 const EMPTY_SALT = new Uint8Array(0);
 
 // ── Base64 helpers (manual, JSON-safe transport) ───────────────────────

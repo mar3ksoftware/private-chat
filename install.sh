@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── Private Chat — one-command setup ────────────────────────────────────
+# ── Scattered Keyhole — one-command setup ───────────────────────────────
 # Installs backend (Bun) and frontend (Node/Vite) dependencies,
 # then starts both servers.
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-echo "=== Private Chat Installer ==="
+echo "=== Scattered Keyhole Installer ==="
 echo ""
 
 # ── 1. Check prerequisites ─────────────────────────────────────────────
@@ -41,7 +41,7 @@ echo ""
 
 # ── 4. Start both servers ──────────────────────────────────────────────
 
-echo "=== Starting Private Chat ==="
+echo "=== Starting Scattered Keyhole ==="
 echo ""
 echo "  Backend:  http://localhost:3000  (health: GET /health)"
 echo "  Frontend: http://localhost:5173"

@@ -4,11 +4,11 @@ import { createConfig } from './config';
 describe('createConfig TLS', () => {
   test('both TLS vars set → trimmed non-null paths', () => {
     const config = createConfig({
-      TLS_CERT_FILE: ' /etc/private-chat/fullchain.pem ',
-      TLS_KEY_FILE: '/etc/private-chat/privkey.pem',
+      TLS_CERT_FILE: ' /etc/scattered-keyhole/fullchain.pem ',
+      TLS_KEY_FILE: '/etc/scattered-keyhole/privkey.pem',
     });
-    expect(config.tlsCertFile).toBe('/etc/private-chat/fullchain.pem');
-    expect(config.tlsKeyFile).toBe('/etc/private-chat/privkey.pem');
+    expect(config.tlsCertFile).toBe('/etc/scattered-keyhole/fullchain.pem');
+    expect(config.tlsKeyFile).toBe('/etc/scattered-keyhole/privkey.pem');
   });
 
   test('neither TLS var set → both null', () => {

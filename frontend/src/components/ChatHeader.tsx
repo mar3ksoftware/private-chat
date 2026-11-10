@@ -42,7 +42,7 @@ export function ChatHeader({
       )}
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-base font-semibold text-zinc-100 sm:text-lg">
-          {username ?? 'Private Chat'}
+          {username ?? 'Scattered Keyhole'}
         </h1>
         {subtitle !== undefined && <p className="truncate text-xs text-zinc-500">{subtitle}</p>}
       </div>

@@ -7,8 +7,8 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pointycastle/api.dart' show InvalidCipherTextException;
-import 'package:private_chat_mobile/src/crypto/media_crypto.dart';
-import 'package:private_chat_mobile/src/models/models.dart';
+import 'package:scattered_keyhole/src/crypto/media_crypto.dart';
+import 'package:scattered_keyhole/src/models/models.dart';
 
 void main() {
   test('generateMediaId returns lowercase UUID v4 ids that never repeat', () {

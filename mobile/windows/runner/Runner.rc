@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.mar3ksoftware" "\0"
-            VALUE "FileDescription", "private_chat_mobile" "\0"
+            VALUE "FileDescription", "Scattered Keyhole" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "private_chat_mobile" "\0"
+            VALUE "InternalName", "scattered_keyhole" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.mar3ksoftware. All rights reserved." "\0"
-            VALUE "OriginalFilename", "private_chat_mobile.exe" "\0"
-            VALUE "ProductName", "private_chat_mobile" "\0"
+            VALUE "OriginalFilename", "scattered_keyhole.exe" "\0"
+            VALUE "ProductName", "Scattered Keyhole" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

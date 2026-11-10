@@ -3,7 +3,7 @@
 // Byte-compatible Dart port of frontend/src/lib/e2ee.ts:
 //
 //   ECDH P-256 (raw 65-byte public keys)
-//     → HKDF-SHA256 (empty salt, info "private-chat-e2ee-v1", 256 bits)
+//     → HKDF-SHA256 (empty salt, info "scattered-keyhole-e2ee-v1", 256 bits)
 //     → AES-256-GCM (12-byte IV, 128-bit tag).
 //
 // Wire format uses standard base64 with padding, exactly like `btoa`/`atob`
@@ -25,7 +25,7 @@ import 'package:pointycastle/key_derivators/hkdf.dart';
 
 /// HKDF `info` string shared with the web client. Changing this breaks
 /// interoperability with every existing client.
-const String e2eeHkdfInfo = 'private-chat-e2ee-v1';
+const String e2eeHkdfInfo = 'scattered-keyhole-e2ee-v1';
 
 /// UTF-8 bytes of [e2eeHkdfInfo].
 final List<int> e2eeHkdfInfoBytes = List<int>.unmodifiable(

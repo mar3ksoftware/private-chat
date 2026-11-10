@@ -7,11 +7,11 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:private_chat_mobile/src/crypto/e2ee.dart';
-import 'package:private_chat_mobile/src/crypto/e2ee_session.dart';
+import 'package:scattered_keyhole/src/crypto/e2ee.dart';
+import 'package:scattered_keyhole/src/crypto/e2ee_session.dart';
 
 const String _vectorKeyHex =
-    'bfe76013b058490562e4290133d6c206c6259bfd093055ee4ff55c36aa826c29';
+    '0082a3337359b7190067416d17f653d3cad1bdea4e3b2fc8dcd41d7ff357c15b';
 
 Uint8List _hexToBytes(String hex) {
   final result = Uint8List(hex.length ~/ 2);
@@ -32,7 +32,7 @@ void main() {
       final key = await hkdfSha256(
         inputKeyMaterial: ikm,
         salt: const <int>[],
-        info: utf8.encode('private-chat-e2ee-v1'),
+        info: utf8.encode('scattered-keyhole-e2ee-v1'),
       );
 
       expect(_bytesToHex(key.bytes), _vectorKeyHex);
@@ -46,7 +46,7 @@ void main() {
 
       expect(
         payload.ciphertext,
-        'ABuBcQ8hoiosE7Q0mGGH3SF7GzNs+7Camhmax9a01iuQxYk=',
+        'Ku+khuVsjU0v9x7igpBF5psmmBk/yFlMn4gqTlvZ2l7gUmA=',
       );
       expect(payload.iv, 'AAECAwQFBgcICQoL');
     });
@@ -55,7 +55,7 @@ void main() {
       final key = SharedKey.fromBytes(_hexToBytes(_vectorKeyHex));
 
       final plaintext = await decrypt(
-        '/lTpybT03CmkJMPYpkQxfvQVj60aPamfvjyehOxc',
+        'zxlFQPjDTq1OW3bwChm9mU2lSfJ1iV8EehjgR4jD',
         'CQgHBgUEAwIBAP/+',
         key,
       );

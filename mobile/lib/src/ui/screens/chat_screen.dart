@@ -116,7 +116,7 @@ class ChatScreen extends StatelessWidget {
         final title =
             group?.name ??
             peerUsername ??
-            (groupId != null ? 'Group' : 'Private Chat');
+            (groupId != null ? 'Group' : 'Direct');
         return SafeArea(
           child: Column(
             children: [

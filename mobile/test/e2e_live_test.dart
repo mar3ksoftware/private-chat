@@ -8,7 +8,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:private_chat_mobile/src/state/chat_controller.dart';
+import 'package:scattered_keyhole/src/state/chat_controller.dart';
 
 void main() {
   final live = Platform.environment['RUN_LIVE_E2E'] == '1';
