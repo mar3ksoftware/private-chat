@@ -7,6 +7,7 @@
 [![Storage](https://img.shields.io/badge/messages%20on%20disk-zero-10b981)](#data--privacy)
 [![E2EE](https://img.shields.io/badge/E2EE-P--256%20%C2%B7%20AES--256--GCM-a855f7)](#how-e2ee-works)
 [![Release assets](https://img.shields.io/github/actions/workflow/status/mar3ksoftware/scattered-keyhole/release-assets.yml)](https://github.com/mar3ksoftware/scattered-keyhole/actions/workflows/release-assets.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 **Chat through a keyhole. Leave nothing behind.**
 
@@ -493,4 +494,6 @@ The suite drives real `ChatController` clients against the running backend and v
 
 ## License
 
-Private use.
+Scattered Keyhole is free software under the GNU Affero General Public License v3.0 — see [LICENSE](LICENSE) for the full text.
+
+Copyright (C) 2026 mar3ksoftware

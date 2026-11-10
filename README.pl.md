@@ -7,6 +7,7 @@
 [![Storage](https://img.shields.io/badge/messages%20on%20disk-zero-10b981)](#data--privacy)
 [![E2EE](https://img.shields.io/badge/E2EE-P--256%20%C2%B7%20AES--256--GCM-a855f7)](#how-e2ee-works)
 [![Release assets](https://img.shields.io/github/actions/workflow/status/mar3ksoftware/scattered-keyhole/release-assets.yml)](https://github.com/mar3ksoftware/scattered-keyhole/actions/workflows/release-assets.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 **Czat przez dziurke od klucza. Nic po sobie nie zostaje.**
 
@@ -493,4 +494,6 @@ Testy steruja prawdziwymi klientami `ChatController` podlaczonymi do dzialajaceg
 
 ## Licencja
 
-Uzytek prywatny.
+Scattered Keyhole jest wolnym oprogramowaniem na licencji GNU Affero General Public License w wersji 3.0 - pelny tekst w pliku [LICENSE](LICENSE).
+
+Copyright (C) 2026 mar3ksoftware
