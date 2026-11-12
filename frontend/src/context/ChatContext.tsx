@@ -1,17 +1,36 @@
 import type { ReactNode } from 'react';
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef } from 'react';
 import { E2eeSession } from '../lib/e2ee-session';
-import { clearMediaCache, MediaError, parseMediaEnvelope, prepareAndUpload } from '../lib/media';
+import { parseEnvelope, wrapTextEnvelope } from '../lib/envelope';
+import { clearMediaCache, MediaError, prepareAndUpload } from '../lib/media';
+import { mentionsMe } from '../lib/mentions';
+import { validateProfile } from '../lib/profile';
 import { getSocket } from '../lib/socket';
 import type {
+  ConversationTarget,
   DecryptedGroupMessage,
   DecryptedMessage,
   GroupInfo,
   KickTally,
   LoginPayload,
+  PrivateMessage,
+  ProfileEntry,
+  ReactionAgg,
+  ReplyRef,
+  UnreadEntry,
   UserInfo,
 } from '../types';
 import { EVENTS } from '../types';
+
+// Client re-sends typing:send at this cadence while a burst is live; the
+// backend debounces duplicates per (sender, target, active) within 3 s.
+const TYPING_REPEAT_MS = 4_000;
+// Receiver-side auto-hide: an indicator disappears even if active:false is lost.
+const TYPING_HIDE_MS = 6_000;
+// Optimistic ops roll back only if their rejection lands within this window.
+const PENDING_OP_TTL_MS = 5_000;
+
+const noopOp = () => {};
 
 type ChatState = {
   readonly user: null | {
@@ -27,6 +46,14 @@ type ChatState = {
   readonly kickTallies: readonly KickTally[];
   readonly connectionStatus: 'connecting' | 'connected' | 'disconnected';
   readonly error: string | null;
+  readonly openConversation: ConversationTarget | null;
+  readonly unread: Readonly<Record<string, UnreadEntry>>;
+  readonly reactions: Readonly<Record<string, ReactionAgg>>;
+  // DM peer → highest receipt:read upTo we received from them.
+  readonly readUpTo: Readonly<Record<string, number>>;
+  // Conversation-scoped typing keys → expiry timestamp of the last active flag.
+  readonly typing: Readonly<Record<string, number>>;
+  readonly profiles: Readonly<Record<string, ProfileEntry>>;
 };
 
 const initialState: ChatState = {
@@ -39,6 +66,12 @@ const initialState: ChatState = {
   kickTallies: [],
   connectionStatus: 'connecting',
   error: null,
+  openConversation: null,
+  unread: {},
+  reactions: {},
+  readUpTo: {},
+  typing: {},
+  profiles: {},
 };
 
 type ChatAction =
@@ -63,7 +96,49 @@ type ChatAction =
       type: 'SET_CONNECTION_STATUS';
       payload: 'connecting' | 'connected' | 'disconnected';
     }
-  | { type: 'SET_ERROR'; payload: string | null };
+  | { type: 'SET_ERROR'; payload: string | null }
+  | { type: 'OPEN_CONVERSATION'; payload: ConversationTarget | null }
+  | { type: 'CLEAR_UNREAD'; payload: string }
+  | { type: 'INCREMENT_UNREAD'; payload: { readonly key: string; readonly mention: boolean } }
+  | {
+      type: 'SET_REACTION';
+      payload: {
+        readonly targetId: string;
+        readonly emoji: string;
+        readonly username: string;
+        readonly active: boolean;
+      };
+    }
+  | { type: 'SET_READ'; payload: { readonly peer: string; readonly upTo: number } }
+  | { type: 'SET_TYPING'; payload: { readonly key: string; readonly expiresAt: number } }
+  | { type: 'CLEAR_TYPING_KEY'; payload: string }
+  | { type: 'CLEAR_TYPING' }
+  | {
+      type: 'SET_PROFILE';
+      payload: { readonly username: string; readonly displayName: string; readonly status: string };
+    }
+  | {
+      type: 'SET_PROFILES';
+      payload: readonly {
+        readonly username: string;
+        readonly displayName: string;
+        readonly status: string;
+      }[];
+    }
+  | {
+      type: 'EDIT_MESSAGE';
+      payload: {
+        readonly targetId: string;
+        readonly body: string;
+        readonly reply: ReplyRef | null;
+        readonly edited: boolean;
+      };
+    }
+  | { type: 'DELETE_MESSAGE'; payload: { readonly targetId: string; readonly deleted: boolean } };
+
+function unreadKeyFor(target: ConversationTarget): string {
+  return target.kind === 'dm' ? `dm:${target.username}` : `group:${target.groupId}`;
+}
 
 function reducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
@@ -80,6 +155,12 @@ function reducer(state: ChatState, action: ChatAction): ChatState {
         directory: [],
         kickTallies: [],
         error: null,
+        openConversation: null,
+        unread: {},
+        reactions: {},
+        readUpTo: {},
+        typing: {},
+        profiles: {},
       };
     case 'SET_USERS':
       return { ...state, users: action.payload };
@@ -135,9 +216,212 @@ function reducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, connectionStatus: action.payload };
     case 'SET_ERROR':
       return { ...state, error: action.payload };
+    case 'OPEN_CONVERSATION': {
+      const target = action.payload;
+      if (target === null) return { ...state, openConversation: null };
+      const key = unreadKeyFor(target);
+      const previous = state.unread[key];
+      return {
+        ...state,
+        openConversation: target,
+        unread:
+          previous === undefined
+            ? state.unread
+            : { ...state.unread, [key]: { count: 0, mention: false } },
+      };
+    }
+    case 'CLEAR_UNREAD': {
+      const previous = state.unread[action.payload];
+      if (previous === undefined || (previous.count === 0 && !previous.mention)) return state;
+      return {
+        ...state,
+        unread: { ...state.unread, [action.payload]: { count: 0, mention: false } },
+      };
+    }
+    case 'INCREMENT_UNREAD': {
+      const previous = state.unread[action.payload.key] ?? { count: 0, mention: false };
+      return {
+        ...state,
+        unread: {
+          ...state.unread,
+          [action.payload.key]: {
+            count: previous.count + 1,
+            mention: previous.mention || action.payload.mention,
+          },
+        },
+      };
+    }
+    case 'SET_REACTION': {
+      const { targetId, emoji, username, active } = action.payload;
+      const merged: Record<string, readonly string[]> = {};
+      for (const [key, value] of Object.entries(state.reactions[targetId] ?? {})) {
+        if (key !== emoji) merged[key] = value;
+      }
+      const reactors = new Set(merged[emoji] ?? []);
+      if (active) reactors.add(username);
+      else reactors.delete(username);
+      if (reactors.size > 0) merged[emoji] = Array.from(reactors);
+      return { ...state, reactions: { ...state.reactions, [targetId]: merged } };
+    }
+    case 'SET_READ': {
+      const previous = state.readUpTo[action.payload.peer] ?? 0;
+      if (action.payload.upTo <= previous) return state;
+      return {
+        ...state,
+        readUpTo: { ...state.readUpTo, [action.payload.peer]: action.payload.upTo },
+      };
+    }
+    case 'SET_TYPING':
+      return {
+        ...state,
+        typing: { ...state.typing, [action.payload.key]: action.payload.expiresAt },
+      };
+    case 'CLEAR_TYPING_KEY': {
+      if (!(action.payload in state.typing)) return state;
+      const typing: Record<string, number> = {};
+      for (const [key, expiresAt] of Object.entries(state.typing)) {
+        if (key !== action.payload) typing[key] = expiresAt;
+      }
+      return { ...state, typing };
+    }
+    case 'CLEAR_TYPING':
+      if (Object.keys(state.typing).length === 0) return state;
+      return { ...state, typing: {} };
+    case 'SET_PROFILE':
+      return {
+        ...state,
+        profiles: {
+          ...state.profiles,
+          [action.payload.username]: {
+            displayName: action.payload.displayName,
+            status: action.payload.status,
+          },
+        },
+      };
+    case 'SET_PROFILES': {
+      const profiles = { ...state.profiles };
+      for (const entry of action.payload) {
+        profiles[entry.username] = { displayName: entry.displayName, status: entry.status };
+      }
+      return { ...state, profiles };
+    }
+    case 'EDIT_MESSAGE': {
+      const { targetId, body, reply, edited } = action.payload;
+      const applyToMessage = (message: DecryptedMessage): DecryptedMessage =>
+        message.id === targetId ? { ...message, body, reply, edited } : message;
+      const applyToGroupMessage = (message: DecryptedGroupMessage): DecryptedGroupMessage =>
+        message.id === targetId ? { ...message, body, reply, edited } : message;
+      return {
+        ...state,
+        messages: state.messages.map(applyToMessage),
+        groupMessages: state.groupMessages.map(applyToGroupMessage),
+      };
+    }
+    case 'DELETE_MESSAGE': {
+      const { targetId, deleted } = action.payload;
+      const applyToMessage = (message: DecryptedMessage): DecryptedMessage =>
+        message.id === targetId ? { ...message, deleted } : message;
+      const applyToGroupMessage = (message: DecryptedGroupMessage): DecryptedGroupMessage =>
+        message.id === targetId ? { ...message, deleted } : message;
+      return {
+        ...state,
+        messages: state.messages.map(applyToMessage),
+        groupMessages: state.groupMessages.map(applyToGroupMessage),
+      };
+    }
     default:
       return state;
   }
+}
+
+// ── Envelope-unwrapping message builders ────────────────────────────────
+
+function bodyOfPlaintext(
+  plaintext: string,
+  decryptionFailed: boolean,
+): {
+  readonly body: string;
+  readonly reply: ReplyRef | null;
+  readonly media: DecryptedMessage['media'];
+} {
+  if (decryptionFailed) return { body: '', reply: null, media: null };
+  const parsed = parseEnvelope(plaintext);
+  if (parsed.kind === 'media') return { body: '', reply: null, media: parsed.descriptor };
+  if (parsed.kind === 'text') return { body: parsed.body, reply: parsed.reply, media: null };
+  return { body: parsed.text, reply: null, media: null };
+}
+
+function buildDecryptedMessage(
+  msg: PrivateMessage,
+  plaintext: string,
+  decryptionFailed: boolean,
+  isOwn: boolean,
+): DecryptedMessage {
+  const unwrapped = bodyOfPlaintext(plaintext, decryptionFailed);
+  return {
+    id: msg.id,
+    from: msg.from,
+    fromUsername: msg.fromUsername,
+    to: msg.to,
+    toUsername: msg.toUsername,
+    plaintext,
+    body: unwrapped.body,
+    reply: unwrapped.reply,
+    edited: false,
+    deleted: false,
+    timestamp: msg.timestamp,
+    isOwn,
+    decryptionFailed,
+    media: unwrapped.media,
+  };
+}
+
+function buildDecryptedGroupMessage(
+  msg: {
+    readonly groupId: string;
+    readonly from: string;
+    readonly fromUsername: string;
+    readonly id: string;
+    readonly timestamp: number;
+  },
+  plaintext: string,
+  decryptionFailed: boolean,
+  isOwn: boolean,
+): DecryptedGroupMessage {
+  const unwrapped = bodyOfPlaintext(plaintext, decryptionFailed);
+  return {
+    id: msg.id,
+    groupId: msg.groupId,
+    from: msg.from,
+    fromUsername: msg.fromUsername,
+    plaintext,
+    body: unwrapped.body,
+    reply: unwrapped.reply,
+    edited: false,
+    deleted: false,
+    timestamp: msg.timestamp,
+    isOwn,
+    decryptionFailed,
+    media: unwrapped.media,
+  };
+}
+
+// ── Shared helpers ──────────────────────────────────────────────────────
+
+function scopePayload(
+  target: ConversationTarget,
+): { readonly to: string } | { readonly groupId: string } {
+  return target.kind === 'dm' ? { to: target.username } : { groupId: target.groupId };
+}
+
+function sameConversation(a: ConversationTarget, b: ConversationTarget): boolean {
+  if (a.kind === 'dm' && b.kind === 'dm') return a.username === b.username;
+  if (a.kind === 'group' && b.kind === 'group') return a.groupId === b.groupId;
+  return false;
+}
+
+function appIsFocused(): boolean {
+  return document.hasFocus() && document.visibilityState === 'visible';
 }
 
 type StoredCredentials =
@@ -173,14 +457,22 @@ export type ChatContextValue = {
   readonly logout: () => void;
   readonly users: readonly UserInfo[];
   readonly messages: readonly DecryptedMessage[];
-  readonly sendMessage: (toUsername: string, plaintext: string) => Promise<boolean>;
+  readonly sendMessage: (
+    toUsername: string,
+    body: string,
+    reply?: ReplyRef | null,
+  ) => Promise<boolean>;
   readonly sendMediaMessage: (toUsername: string, file: File) => Promise<boolean>;
   readonly groups: readonly GroupInfo[];
   readonly groupMessages: readonly DecryptedGroupMessage[];
   readonly directory: readonly string[];
   readonly kickTallies: readonly KickTally[];
   readonly createGroup: (name: string, members: readonly string[]) => void;
-  readonly sendGroupMessage: (groupId: string, plaintext: string) => Promise<boolean>;
+  readonly sendGroupMessage: (
+    groupId: string,
+    body: string,
+    reply?: ReplyRef | null,
+  ) => Promise<boolean>;
   readonly sendGroupMediaMessage: (groupId: string, file: File) => Promise<boolean>;
   readonly mediaToken: string | null;
   readonly addMember: (groupId: string, username: string) => void;
@@ -188,6 +480,25 @@ export type ChatContextValue = {
   readonly voteKick: (groupId: string, username: string) => void;
   readonly connectionStatus: 'connecting' | 'connected' | 'disconnected';
   readonly error: string | null;
+  // ── Tier-1 features ──
+  readonly unread: Readonly<Record<string, UnreadEntry>>;
+  readonly reactions: Readonly<Record<string, ReactionAgg>>;
+  readonly readUpTo: Readonly<Record<string, number>>;
+  readonly typing: Readonly<Record<string, number>>;
+  readonly profiles: Readonly<Record<string, ProfileEntry>>;
+  readonly displayNameOf: (username: string) => string;
+  readonly setOpenConversation: (target: ConversationTarget | null) => void;
+  readonly sendTyping: (target: ConversationTarget) => void;
+  readonly stopTyping: () => void;
+  readonly toggleReaction: (target: ConversationTarget, targetId: string, emoji: string) => void;
+  readonly editMessage: (
+    target: ConversationTarget,
+    targetId: string,
+    body: string,
+    reply: ReplyRef | null,
+  ) => Promise<boolean>;
+  readonly deleteMessage: (target: ConversationTarget, targetId: string) => void;
+  readonly updateProfile: (displayName: string, status: string) => void;
 };
 
 export const ChatContext = createContext<ChatContextValue | null>(null);
@@ -216,6 +527,11 @@ function friendlyReason(reason: string): string {
   return FRIENDLY_REASONS[reason] ?? reason;
 }
 
+type PendingOp = {
+  readonly at: number;
+  readonly undo: () => void;
+};
+
 export function ChatProvider({ children }: { readonly children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const socketRef = useRef(getSocket());
@@ -227,6 +543,21 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Kept in memory only — never persisted to storage.
   const mediaTokenRef = useRef<string | null>(null);
+  // Outgoing typing burst state: which conversation, and its repeat timer.
+  const typingRef = useRef<{
+    target: ConversationTarget | null;
+    active: boolean;
+    interval: ReturnType<typeof setInterval> | null;
+  }>({ target: null, active: false, interval: null });
+  // Auto-hide timers for incoming typing indicators, keyed like `typing`.
+  const typingTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  // Highest receipt:read upTo already sent per peer — keeps repeats off the
+  // shared rate-limit bucket.
+  const lastReceiptRef = useRef<Record<string, number>>({});
+  // Optimistic reacts/edits/deletes/profiles awaiting a possible rejection;
+  // message_rejected carries no correlation id, so replies are matched FIFO-ish
+  // by recency within a short window.
+  const pendingOpsRef = useRef<PendingOp[]>([]);
 
   stateRef.current = state;
 
@@ -239,6 +570,23 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       errorTimerRef.current = null;
       dispatch({ type: 'SET_ERROR', payload: null });
     }, 5000);
+  }, []);
+
+  const enqueueOp = useCallback((undo: () => void) => {
+    const now = Date.now();
+    const fresh = pendingOpsRef.current.filter((op) => now - op.at <= PENDING_OP_TTL_MS);
+    fresh.push({ at: now, undo });
+    pendingOpsRef.current = fresh;
+  }, []);
+
+  const runLatestPendingOp = useCallback(() => {
+    const now = Date.now();
+    const fresh = pendingOpsRef.current.filter((op) => now - op.at <= PENDING_OP_TTL_MS);
+    pendingOpsRef.current = fresh;
+    // Newest first: a rejection lands within one round-trip of its emit, so
+    // the most recent pending op is almost always the one being rejected.
+    const op = fresh.pop();
+    if (op !== undefined) op.undo();
   }, []);
 
   const connectIfNeeded = useCallback(() => {
@@ -284,6 +632,64 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     [connectIfNeeded],
   );
 
+  const clearTypingTimers = useCallback(() => {
+    for (const timer of typingTimersRef.current.values()) {
+      clearTimeout(timer);
+    }
+    typingTimersRef.current.clear();
+  }, []);
+
+  const stopTyping = useCallback(() => {
+    const current = typingRef.current;
+    if (current.interval !== null) {
+      clearInterval(current.interval);
+      current.interval = null;
+    }
+    if (current.active && current.target !== null) {
+      enqueueOp(noopOp);
+      if (socketRef.current.connected) {
+        socketRef.current.emit(EVENTS.CLIENT.TYPING_SEND, {
+          ...scopePayload(current.target),
+          active: false,
+        });
+      }
+    }
+    current.active = false;
+    current.target = null;
+  }, [enqueueOp]);
+
+  const sendTyping = useCallback(
+    (target: ConversationTarget) => {
+      const current = typingRef.current;
+      if (current.active) {
+        if (current.target !== null && sameConversation(current.target, target)) return;
+        // Conversation switched mid-burst: clear the previous indicator first.
+        stopTyping();
+      }
+      current.active = true;
+      current.target = target;
+      enqueueOp(noopOp);
+      if (socketRef.current.connected) {
+        socketRef.current.emit(EVENTS.CLIENT.TYPING_SEND, {
+          ...scopePayload(target),
+          active: true,
+        });
+      }
+      current.interval = setInterval(() => {
+        const live = typingRef.current;
+        if (!live.active || live.target === null) return;
+        enqueueOp(noopOp);
+        if (socketRef.current.connected) {
+          socketRef.current.emit(EVENTS.CLIENT.TYPING_SEND, {
+            ...scopePayload(live.target),
+            active: true,
+          });
+        }
+      }, TYPING_REPEAT_MS);
+    },
+    [enqueueOp, stopTyping],
+  );
+
   const logout = useCallback(() => {
     credentialsRef.current = null;
     pendingGuestRef.current = null;
@@ -293,12 +699,209 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       clearTimeout(errorTimerRef.current);
       errorTimerRef.current = null;
     }
+    stopTyping();
+    clearTypingTimers();
+    dispatch({ type: 'CLEAR_TYPING' });
+    pendingOpsRef.current = [];
+    lastReceiptRef.current = {};
     socketRef.current.disconnect();
     e2eeRef.current = new E2eeSession();
     dispatch({ type: 'LOGOUT' });
+  }, [clearTypingTimers, stopTyping]);
+
+  // Highest timestamp of a message received from this peer (C2 upTo).
+  const computeUpTo = useCallback((peer: string): number | undefined => {
+    let max: number | undefined;
+    for (const message of stateRef.current.messages) {
+      if (message.isOwn || message.fromUsername !== peer) continue;
+      if (max === undefined || message.timestamp > max) max = message.timestamp;
+    }
+    return max;
   }, []);
 
-  const sendMessage = useCallback(
+  const sendReadReceipt = useCallback(
+    (peer: string, upTo: number) => {
+      const socket = socketRef.current;
+      if (!socket.connected) return;
+      const last = lastReceiptRef.current[peer];
+      if (last !== undefined && upTo <= last) return;
+      lastReceiptRef.current[peer] = upTo;
+      enqueueOp(noopOp);
+      socket.emit(EVENTS.CLIENT.RECEIPT_READ, { to: peer, upTo });
+    },
+    [enqueueOp],
+  );
+
+  const setOpenConversation = useCallback(
+    (target: ConversationTarget | null) => {
+      dispatch({ type: 'OPEN_CONVERSATION', payload: target });
+      if (target === null || target.kind !== 'dm' || !appIsFocused()) return;
+      const upTo = computeUpTo(target.username);
+      if (upTo !== undefined) sendReadReceipt(target.username, upTo);
+    },
+    [computeUpTo, sendReadReceipt],
+  );
+
+  const toggleReaction = useCallback(
+    (target: ConversationTarget, targetId: string, emoji: string) => {
+      const me = stateRef.current.user?.username;
+      if (me === undefined) return;
+      const current = stateRef.current.reactions[targetId]?.[emoji] ?? [];
+      const active = !current.includes(me);
+      enqueueOp(() =>
+        dispatch({
+          type: 'SET_REACTION',
+          payload: { targetId, emoji, username: me, active: !active },
+        }),
+      );
+      dispatch({ type: 'SET_REACTION', payload: { targetId, emoji, username: me, active } });
+      socketRef.current.emit(EVENTS.CLIENT.MESSAGE_REACT, {
+        ...scopePayload(target),
+        targetId,
+        emoji,
+        active,
+      });
+    },
+    [enqueueOp],
+  );
+
+  const findMessageById = useCallback(
+    (targetId: string): DecryptedMessage | DecryptedGroupMessage | undefined => {
+      return (
+        stateRef.current.messages.find((m) => m.id === targetId) ??
+        stateRef.current.groupMessages.find((m) => m.id === targetId)
+      );
+    },
+    [],
+  );
+
+  const editMessage = useCallback(
+    async (
+      target: ConversationTarget,
+      targetId: string,
+      body: string,
+      reply: ReplyRef | null,
+    ): Promise<boolean> => {
+      const original = findMessageById(targetId);
+      if (original === undefined || !original.isOwn || original.media != null || original.deleted) {
+        return false;
+      }
+
+      try {
+        const envelope = wrapTextEnvelope(body, reply);
+        const rollback = () =>
+          dispatch({
+            type: 'EDIT_MESSAGE',
+            payload: {
+              targetId,
+              body: original.body,
+              reply: original.reply,
+              edited: original.edited,
+            },
+          });
+
+        if (target.kind === 'dm') {
+          const e2ee = e2eeRef.current;
+          const ready = await e2ee.waitForSharedKey(target.username);
+          if (!ready) {
+            showError('Secure session not ready. Please try again.');
+            return false;
+          }
+          const { ciphertext, iv } = await e2ee.encrypt(target.username, envelope);
+          enqueueOp(rollback);
+          dispatch({ type: 'EDIT_MESSAGE', payload: { targetId, body, reply, edited: true } });
+          socketRef.current.emit(EVENTS.CLIENT.MESSAGE_EDIT, {
+            to: target.username,
+            targetId,
+            ciphertext,
+            iv,
+          });
+          return true;
+        }
+
+        const group = stateRef.current.groups.find((g) => g.groupId === target.groupId);
+        if (group === undefined) return false;
+        const e2ee = e2eeRef.current;
+        const myUsername = stateRef.current.user?.username;
+        const recipients = group.members.filter(
+          (member) => member.username !== myUsername && e2ee.hasSharedKey(member.username),
+        );
+        if (recipients.length === 0) {
+          showError('Secure session not ready. Please try again.');
+          return false;
+        }
+
+        // One ciphertext decrypts with exactly one pairwise key, so each member
+        // gets their own copy — the same key scheme a group send uses.
+        const copies: { readonly ciphertext: string; readonly iv: string }[] = [];
+        for (const member of recipients) {
+          copies.push(await e2ee.encrypt(member.username, envelope));
+        }
+        enqueueOp(rollback);
+        for (let i = 1; i < copies.length; i++) enqueueOp(noopOp);
+        dispatch({ type: 'EDIT_MESSAGE', payload: { targetId, body, reply, edited: true } });
+        for (const copy of copies) {
+          socketRef.current.emit(EVENTS.CLIENT.MESSAGE_EDIT, {
+            groupId: target.groupId,
+            targetId,
+            ciphertext: copy.ciphertext,
+            iv: copy.iv,
+          });
+        }
+        return true;
+      } catch {
+        showError('Failed to send message. Please try again.');
+        return false;
+      }
+    },
+    [enqueueOp, findMessageById, showError],
+  );
+
+  const deleteMessage = useCallback(
+    (target: ConversationTarget, targetId: string) => {
+      const original = findMessageById(targetId);
+      if (original === undefined || !original.isOwn || original.deleted) return;
+      enqueueOp(() => dispatch({ type: 'DELETE_MESSAGE', payload: { targetId, deleted: false } }));
+      dispatch({ type: 'DELETE_MESSAGE', payload: { targetId, deleted: true } });
+      socketRef.current.emit(EVENTS.CLIENT.MESSAGE_DELETE, { ...scopePayload(target), targetId });
+    },
+    [enqueueOp, findMessageById],
+  );
+
+  const updateProfile = useCallback(
+    (rawDisplayName: string, rawStatus: string) => {
+      const me = stateRef.current.user;
+      if (me === null) return;
+      const validation = validateProfile(rawDisplayName, rawStatus);
+      // The editor renders these inline; nothing to send when either fails.
+      if (validation.nameError !== null || validation.statusError !== null) return;
+      const previous = stateRef.current.profiles[me.username] ?? {
+        displayName: me.username,
+        status: '',
+      };
+      enqueueOp(() =>
+        dispatch({
+          type: 'SET_PROFILE',
+          payload: { username: me.username, ...previous },
+        }),
+      );
+      dispatch({
+        type: 'SET_PROFILE',
+        payload: {
+          username: me.username,
+          displayName: validation.displayName,
+          status: validation.status,
+        },
+      });
+      socketRef.current.emit(EVENTS.CLIENT.PROFILE_UPDATE, {
+        displayName: validation.displayName,
+        status: validation.status,
+      });
+    },
+    [enqueueOp],
+  );
+
+  const sendEncrypted = useCallback(
     async (toUsername: string, plaintext: string): Promise<boolean> => {
       if (toUsername === stateRef.current.user?.username) return false;
       try {
@@ -309,14 +912,28 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
           return false;
         }
         const { ciphertext, iv } = await e2ee.encrypt(toUsername, plaintext);
-        socketRef.current.emit(EVENTS.CLIENT.MESSAGE_SEND, { to: toUsername, ciphertext, iv });
+        enqueueOp(noopOp);
+        socketRef.current.emit(EVENTS.CLIENT.MESSAGE_SEND, {
+          id: crypto.randomUUID(),
+          to: toUsername,
+          ciphertext,
+          iv,
+        });
         return true;
       } catch {
         showError('Failed to send message. Please try again.');
         return false;
       }
     },
-    [showError],
+    [enqueueOp, showError],
+  );
+
+  // Text sends always go out as a v2 envelope; media keeps its own descriptor.
+  const sendMessage = useCallback(
+    (toUsername: string, body: string, reply?: ReplyRef | null): Promise<boolean> => {
+      return sendEncrypted(toUsername, wrapTextEnvelope(body, reply ?? null));
+    },
+    [sendEncrypted],
   );
 
   const createGroup = useCallback((name: string, members: readonly string[]) => {
@@ -335,7 +952,7 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     socketRef.current.emit(EVENTS.CLIENT.GROUP_KICK_VOTE, { groupId, username });
   }, []);
 
-  const sendGroupMessage = useCallback(
+  const sendGroupEncrypted = useCallback(
     async (groupId: string, plaintext: string): Promise<boolean> => {
       const currentUser = stateRef.current.user;
       const group = stateRef.current.groups.find((g) => g.groupId === groupId);
@@ -369,14 +986,26 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
           return false;
         }
 
-        socketRef.current.emit(EVENTS.CLIENT.GROUP_MESSAGE_SEND, { groupId, ciphertexts });
+        enqueueOp(noopOp);
+        socketRef.current.emit(EVENTS.CLIENT.GROUP_MESSAGE_SEND, {
+          id: crypto.randomUUID(),
+          groupId,
+          ciphertexts,
+        });
         return true;
       } catch {
         showError('Failed to send message. Please try again.');
         return false;
       }
     },
-    [showError],
+    [enqueueOp, showError],
+  );
+
+  const sendGroupMessage = useCallback(
+    (groupId: string, body: string, reply?: ReplyRef | null): Promise<boolean> => {
+      return sendGroupEncrypted(groupId, wrapTextEnvelope(body, reply ?? null));
+    },
+    [sendGroupEncrypted],
   );
 
   const prepareMediaEnvelope = useCallback(
@@ -396,18 +1025,19 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     async (toUsername: string, file: File): Promise<boolean> => {
       const envelope = await prepareMediaEnvelope(file);
       if (envelope === null) return false;
-      return sendMessage(toUsername, envelope);
+      // Media descriptors stay unwrapped — the parser branches on t first.
+      return sendEncrypted(toUsername, envelope);
     },
-    [prepareMediaEnvelope, sendMessage],
+    [prepareMediaEnvelope, sendEncrypted],
   );
 
   const sendGroupMediaMessage = useCallback(
     async (groupId: string, file: File): Promise<boolean> => {
       const envelope = await prepareMediaEnvelope(file);
       if (envelope === null) return false;
-      return sendGroupMessage(groupId, envelope);
+      return sendGroupEncrypted(groupId, envelope);
     },
-    [prepareMediaEnvelope, sendGroupMessage],
+    [prepareMediaEnvelope, sendGroupEncrypted],
   );
 
   useEffect(() => {
@@ -420,6 +1050,51 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
         },
         () => {},
       );
+    };
+
+    const knownUsernames = (): string[] => {
+      const snapshot = stateRef.current;
+      const names = new Set(snapshot.directory);
+      for (const active of snapshot.users) names.add(active.username);
+      if (snapshot.user !== null) names.add(snapshot.user.username);
+      return Array.from(names);
+    };
+
+    const noteIncomingDm = (msg: PrivateMessage, built: DecryptedMessage, isOwn: boolean) => {
+      if (isOwn) return;
+      const snapshot = stateRef.current;
+      const open = snapshot.openConversation;
+      const isOpen = open !== null && open.kind === 'dm' && open.username === msg.fromUsername;
+      const mention =
+        !built.decryptionFailed &&
+        snapshot.user !== null &&
+        mentionsMe(built.body, knownUsernames(), snapshot.user.username, false);
+      // Unread: count when the DM is closed or the window is in the back
+      // ground; a mention of me always counts (C7).
+      if (mention || !isOpen || !appIsFocused()) {
+        dispatch({
+          type: 'INCREMENT_UNREAD',
+          payload: { key: `dm:${msg.fromUsername}`, mention },
+        });
+      }
+      if (isOpen && appIsFocused()) {
+        const upTo = computeUpTo(msg.fromUsername);
+        sendReadReceipt(msg.fromUsername, Math.max(upTo ?? 0, msg.timestamp));
+      }
+    };
+
+    const noteIncomingGroup = (groupId: string, built: DecryptedGroupMessage, isOwn: boolean) => {
+      if (isOwn) return;
+      const snapshot = stateRef.current;
+      const open = snapshot.openConversation;
+      const isOpen = open !== null && open.kind === 'group' && open.groupId === groupId;
+      const mention =
+        !built.decryptionFailed &&
+        snapshot.user !== null &&
+        mentionsMe(built.body, knownUsernames(), snapshot.user.username, true);
+      if (mention || !isOpen || !appIsFocused()) {
+        dispatch({ type: 'INCREMENT_UNREAD', payload: { key: `group:${groupId}`, mention } });
+      }
     };
 
     const handleConnect = () => {
@@ -440,6 +1115,10 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     const handleDisconnect = () => {
       mediaTokenRef.current = null;
       clearMediaCache();
+      // Indicators can't survive a dead socket; drop local typing state too.
+      stopTyping();
+      clearTypingTimers();
+      dispatch({ type: 'CLEAR_TYPING' });
       dispatch({ type: 'SET_CONNECTION_STATUS', payload: 'disconnected' });
     };
 
@@ -451,10 +1130,36 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       dispatch({ type: 'SET_CONNECTION_STATUS', payload: 'connecting' });
     };
 
+    const handleWindowFocus = () => {
+      const open = stateRef.current.openConversation;
+      if (open === null) return;
+      dispatch({ type: 'CLEAR_UNREAD', payload: unreadKeyFor(open) });
+      if (open.kind === 'dm' && appIsFocused()) {
+        const upTo = computeUpTo(open.username);
+        if (upTo !== undefined) sendReadReceipt(open.username, upTo);
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleWindowFocus();
+      } else {
+        // App backgrounded → typing active:false (C1).
+        stopTyping();
+      }
+    };
+
+    const handlePageHide = () => {
+      stopTyping();
+    };
+
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('connect_error', handleConnectError);
     socket.io.on('reconnect_attempt', handleReconnectAttempt);
+    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
 
     socket.on(EVENTS.SERVER.MEDIA_TOKEN, (payload) => {
       mediaTokenRef.current = payload.token;
@@ -502,6 +1207,14 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       }
       dispatch({ type: 'ADD_USER', payload: user });
       dispatch({ type: 'ADD_DIRECTORY_USER', payload: user.username });
+      dispatch({
+        type: 'SET_PROFILE',
+        payload: {
+          username: user.username,
+          displayName: user.displayName ?? user.username,
+          status: user.status ?? '',
+        },
+      });
 
       // Our own key is derived locally when needed (see ensureSelfKey).
       if (user.username === stateRef.current.user?.username) return;
@@ -517,6 +1230,14 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
 
     socket.on(EVENTS.SERVER.ACTIVE_USERS, (users) => {
       dispatch({ type: 'SET_USERS', payload: users });
+      dispatch({
+        type: 'SET_PROFILES',
+        payload: users.map((u) => ({
+          username: u.username,
+          displayName: u.displayName ?? u.username,
+          status: u.status ?? '',
+        })),
+      });
       // Include ourselves: the server relays the key back to our own room,
       // which gives us the self shared key used to decrypt our own group echoes.
       e2eeRef.current.getPublicKey().then(
@@ -533,9 +1254,21 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     });
 
     socket.on(EVENTS.SERVER.ACTIVE_GROUPS, (groups) => {
-      // The server re-sends active tallies right after this snapshot.
+      // The server re-sent active tallies right after this snapshot.
       dispatch({ type: 'SET_KICK_TALLIES', payload: [] });
       dispatch({ type: 'SET_GROUPS', payload: groups });
+      const memberProfiles = groups.flatMap((group) =>
+        group.members
+          .filter((member) => member.displayName !== undefined || member.status !== undefined)
+          .map((member) => ({
+            username: member.username,
+            displayName: member.displayName ?? member.username,
+            status: member.status ?? '',
+          })),
+      );
+      if (memberProfiles.length > 0) {
+        dispatch({ type: 'SET_PROFILES', payload: memberProfiles });
+      }
     });
 
     socket.on(EVENTS.SERVER.E2EE_PUBLIC_KEY, (data) => {
@@ -549,42 +1282,30 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       const decryptWith = isOwn ? msg.toUsername : msg.fromUsername;
       e2eeRef.current.decrypt(decryptWith, msg.ciphertext, msg.iv).then(
         (plaintext) => {
-          dispatch({
-            type: 'ADD_MESSAGE',
-            payload: {
-              from: msg.from,
-              fromUsername: msg.fromUsername,
-              to: msg.to,
-              toUsername: msg.toUsername,
-              plaintext,
-              timestamp: msg.timestamp,
-              isOwn,
-              decryptionFailed: false,
-              media: parseMediaEnvelope(plaintext),
-            },
-          });
+          const built = buildDecryptedMessage(msg, plaintext, false, isOwn);
+          dispatch({ type: 'ADD_MESSAGE', payload: built });
+          noteIncomingDm(msg, built, isOwn);
         },
         () => {
-          dispatch({
-            type: 'ADD_MESSAGE',
-            payload: {
-              from: msg.from,
-              fromUsername: msg.fromUsername,
-              to: msg.to,
-              toUsername: msg.toUsername,
-              plaintext: '[Decryption failed]',
-              timestamp: msg.timestamp,
-              isOwn,
-              decryptionFailed: true,
-              media: null,
-            },
-          });
+          const built = buildDecryptedMessage(msg, '[Decryption failed]', true, isOwn);
+          dispatch({ type: 'ADD_MESSAGE', payload: built });
+          noteIncomingDm(msg, built, isOwn);
         },
       );
     });
 
     socket.on(EVENTS.SERVER.GROUP_CREATED, (group) => {
       dispatch({ type: 'ADD_GROUP', payload: group });
+      const memberProfiles = group.members
+        .filter((member) => member.displayName !== undefined || member.status !== undefined)
+        .map((member) => ({
+          username: member.username,
+          displayName: member.displayName ?? member.username,
+          status: member.status ?? '',
+        }));
+      if (memberProfiles.length > 0) {
+        dispatch({ type: 'SET_PROFILES', payload: memberProfiles });
+      }
     });
 
     socket.on(EVENTS.SERVER.GROUP_CREATED_ERROR, (data) => {
@@ -617,50 +1338,26 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       const myUsername = stateRef.current.user?.username;
       if (myUsername === undefined) return;
 
-      const base = {
-        groupId: msg.groupId,
-        from: msg.from,
-        fromUsername: msg.fromUsername,
-        timestamp: msg.timestamp,
-        isOwn: msg.from === stateRef.current.user?.userId,
-      };
+      const isOwn = msg.from === stateRef.current.user?.userId;
 
       const myEntry = msg.ciphertexts.find((c) => c.to === myUsername);
       if (myEntry === undefined) {
-        dispatch({
-          type: 'ADD_GROUP_MESSAGE',
-          payload: {
-            ...base,
-            plaintext: '[Encrypted]',
-            decryptionFailed: true,
-            media: null,
-          },
-        });
+        const built = buildDecryptedGroupMessage(msg, '[Encrypted]', true, isOwn);
+        dispatch({ type: 'ADD_GROUP_MESSAGE', payload: built });
+        noteIncomingGroup(msg.groupId, built, isOwn);
         return;
       }
 
       e2eeRef.current.decrypt(msg.fromUsername, myEntry.ciphertext, myEntry.iv).then(
         (plaintext) => {
-          dispatch({
-            type: 'ADD_GROUP_MESSAGE',
-            payload: {
-              ...base,
-              plaintext,
-              decryptionFailed: false,
-              media: parseMediaEnvelope(plaintext),
-            },
-          });
+          const built = buildDecryptedGroupMessage(msg, plaintext, false, isOwn);
+          dispatch({ type: 'ADD_GROUP_MESSAGE', payload: built });
+          noteIncomingGroup(msg.groupId, built, isOwn);
         },
         () => {
-          dispatch({
-            type: 'ADD_GROUP_MESSAGE',
-            payload: {
-              ...base,
-              plaintext: '[Decryption failed]',
-              decryptionFailed: true,
-              media: null,
-            },
-          });
+          const built = buildDecryptedGroupMessage(msg, '[Decryption failed]', true, isOwn);
+          dispatch({ type: 'ADD_GROUP_MESSAGE', payload: built });
+          noteIncomingGroup(msg.groupId, built, isOwn);
         },
       );
     });
@@ -677,10 +1374,106 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
 
     socket.on(EVENTS.SERVER.MESSAGE_REJECTED, (data) => {
       showError(data.reason);
+      runLatestPendingOp();
     });
 
     socket.on(EVENTS.SERVER.ERROR, (data) => {
       showError(data.message);
+    });
+
+    // ── Tier-1 events ──
+
+    socket.on(EVENTS.SERVER.TYPING_CHANGED, (payload) => {
+      const key =
+        payload.groupId !== undefined
+          ? `group:${payload.groupId}:${payload.fromUsername}`
+          : `dm:${payload.fromUsername}`;
+
+      const existingTimer = typingTimersRef.current.get(key);
+      if (existingTimer !== undefined) {
+        clearTimeout(existingTimer);
+        typingTimersRef.current.delete(key);
+      }
+
+      if (!payload.active) {
+        dispatch({ type: 'CLEAR_TYPING_KEY', payload: key });
+        return;
+      }
+
+      dispatch({ type: 'SET_TYPING', payload: { key, expiresAt: Date.now() + TYPING_HIDE_MS } });
+      const timer = setTimeout(() => {
+        typingTimersRef.current.delete(key);
+        dispatch({ type: 'CLEAR_TYPING_KEY', payload: key });
+      }, TYPING_HIDE_MS);
+      typingTimersRef.current.set(key, timer);
+    });
+
+    socket.on(EVENTS.SERVER.RECEIPT_READ, (payload) => {
+      dispatch({
+        type: 'SET_READ',
+        payload: { peer: payload.fromUsername, upTo: payload.upTo },
+      });
+    });
+
+    socket.on(EVENTS.SERVER.MESSAGE_REACTED, (payload) => {
+      dispatch({
+        type: 'SET_REACTION',
+        payload: {
+          targetId: payload.targetId,
+          emoji: payload.emoji,
+          username: payload.fromUsername,
+          active: payload.active,
+        },
+      });
+    });
+
+    socket.on(EVENTS.SERVER.MESSAGE_EDITED, (payload) => {
+      const list =
+        payload.groupId !== undefined ? stateRef.current.groupMessages : stateRef.current.messages;
+      const original = list.find((m) => m.id === payload.targetId);
+      if (original === undefined) return;
+      // The relay is stateless: only the original author may edit, and only
+      // when the original was a text message (spec B author enforcement).
+      if (original.fromUsername !== payload.fromUsername) return;
+      if (original.media != null || original.deleted) return;
+
+      e2eeRef.current.decrypt(payload.fromUsername, payload.ciphertext, payload.iv).then(
+        (plaintext) => {
+          const parsed = parseEnvelope(plaintext);
+          if (parsed.kind === 'media') return;
+          const body = parsed.kind === 'text' ? parsed.body : parsed.text;
+          const reply = parsed.kind === 'text' ? parsed.reply : null;
+          dispatch({
+            type: 'EDIT_MESSAGE',
+            payload: { targetId: payload.targetId, body, reply, edited: true },
+          });
+        },
+        () => {},
+      );
+    });
+
+    socket.on(EVENTS.SERVER.MESSAGE_DELETED, (payload) => {
+      const list =
+        payload.groupId !== undefined ? stateRef.current.groupMessages : stateRef.current.messages;
+      const original = list.find((m) => m.id === payload.targetId);
+      if (original === undefined) return;
+      if (original.fromUsername !== payload.fromUsername) return;
+      if (original.deleted) return;
+      dispatch({
+        type: 'DELETE_MESSAGE',
+        payload: { targetId: payload.targetId, deleted: true },
+      });
+    });
+
+    socket.on(EVENTS.SERVER.PROFILE_UPDATED, (payload) => {
+      dispatch({
+        type: 'SET_PROFILE',
+        payload: {
+          username: payload.username,
+          displayName: payload.displayName,
+          status: payload.status,
+        },
+      });
     });
 
     socket.connect();
@@ -690,16 +1483,20 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       socket.off('disconnect', handleDisconnect);
       socket.off('connect_error', handleConnectError);
       socket.io.off('reconnect_attempt', handleReconnectAttempt);
+      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
       socket.removeAllListeners();
       socket.disconnect();
       mediaTokenRef.current = null;
       clearMediaCache();
+      clearTypingTimers();
       if (errorTimerRef.current !== null) {
         clearTimeout(errorTimerRef.current);
         errorTimerRef.current = null;
       }
     };
-  }, [showError]);
+  }, [clearTypingTimers, computeUpTo, runLatestPendingOp, sendReadReceipt, showError, stopTyping]);
 
   const value: ChatContextValue = {
     user: state.user,
@@ -724,6 +1521,19 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     voteKick,
     connectionStatus: state.connectionStatus,
     error: state.error,
+    unread: state.unread,
+    reactions: state.reactions,
+    readUpTo: state.readUpTo,
+    typing: state.typing,
+    profiles: state.profiles,
+    displayNameOf: (username: string) => state.profiles[username]?.displayName || username,
+    setOpenConversation,
+    sendTyping,
+    stopTyping,
+    toggleReaction,
+    editMessage,
+    deleteMessage,
+    updateProfile,
   };
 
   return <ChatContext value={value}>{children}</ChatContext>;

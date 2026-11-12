@@ -1,3 +1,4 @@
+import { useChat } from '../context/ChatContext';
 import type { GroupInfo } from '../types';
 
 type GroupItemProps = {
@@ -7,6 +8,10 @@ type GroupItemProps = {
 };
 
 export function GroupItem({ group, isSelected, onSelect }: GroupItemProps) {
+  const { unread } = useChat();
+  const entry = unread[`group:${group.groupId}`];
+  const count = entry?.count ?? 0;
+
   return (
     <button
       type="button"
@@ -22,6 +27,15 @@ export function GroupItem({ group, isSelected, onSelect }: GroupItemProps) {
         <p className="text-sm font-medium truncate">{group.name}</p>
         <p className="text-xs text-zinc-500">{group.members.length} members</p>
       </div>
+      {count > 0 && (
+        <span
+          className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold text-white ${
+            entry?.mention === true ? 'bg-sky-500' : 'bg-indigo-500'
+          }`}
+        >
+          {count > 99 ? '99+' : count}
+        </span>
+      )}
     </button>
   );
 }

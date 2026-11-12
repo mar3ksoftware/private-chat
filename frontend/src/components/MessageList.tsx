@@ -1,12 +1,13 @@
 import { useEffect, useRef } from 'react';
-import type { DecryptedGroupMessage, DecryptedMessage } from '../types';
+import type { DecryptedGroupMessage, DecryptedMessage, ReplyRef } from '../types';
 import { MessageBubble } from './MessageBubble';
 
 type MessageListProps = {
   readonly messages: readonly (DecryptedMessage | DecryptedGroupMessage)[];
+  readonly onReply: (reply: ReplyRef) => void;
 };
 
-export function MessageList({ messages }: MessageListProps) {
+export function MessageList({ messages, onReply }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll to bottom when message count changes
@@ -24,12 +25,12 @@ export function MessageList({ messages }: MessageListProps) {
 
   return (
     <div className="flex-1 overflow-y-auto p-4 space-y-3">
-      {messages.map((message, index) => (
+      {messages.map((message) => (
         <MessageBubble
-          // biome-ignore lint/suspicious/noArrayIndexKey: index disambiguates identical sender+timestamp pairs
-          key={`${message.from}-${message.timestamp}-${index}`}
+          key={message.id}
           message={message}
           showSender={'groupId' in message}
+          onReply={onReply}
         />
       ))}
       <div ref={endRef} />

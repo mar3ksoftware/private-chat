@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useChat } from '../context/ChatContext';
 import { CreateGroupModal } from './CreateGroupModal';
 import { GroupList } from './GroupList';
+import { ProfileEditor } from './ProfileEditor';
 import { UserList } from './UserList';
 
 type SidebarProps = {
@@ -32,8 +33,9 @@ export function Sidebar({
   selectedGroup,
   onSelectGroup,
 }: SidebarProps) {
-  const { user, users, groups, error, connectionStatus } = useChat();
+  const { user, users, groups, error, connectionStatus, displayNameOf } = useChat();
   const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [showProfileEditor, setShowProfileEditor] = useState(false);
   const [activeTab, setActiveTab] = useState<'users' | 'groups'>('users');
 
   // The tab counter must match what UserList shows (it excludes the current user).
@@ -115,21 +117,26 @@ export function Sidebar({
         </>
       )}
 
-      <div className="mt-auto shrink-0 border-t border-zinc-800/50 px-4 py-3">
+      <button
+        type="button"
+        onClick={() => setShowProfileEditor(true)}
+        className="mt-auto shrink-0 border-t border-zinc-800/50 px-4 py-3 text-left transition-colors hover:bg-zinc-800/40"
+      >
         <div className="flex min-w-0 items-center gap-2">
           <span
             className="min-w-0 truncate text-sm font-medium text-zinc-100"
             title={user?.username}
           >
-            {user?.username ?? '...'}
+            {user === null ? '...' : displayNameOf(user.username)}
           </span>
           <span className="shrink-0 rounded-full bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
             {user?.isGuest === true ? 'Guest' : 'Account'}
           </span>
         </div>
-      </div>
+      </button>
 
       <CreateGroupModal isOpen={showCreateGroup} onClose={() => setShowCreateGroup(false)} />
+      <ProfileEditor isOpen={showProfileEditor} onClose={() => setShowProfileEditor(false)} />
     </div>
   );
 }

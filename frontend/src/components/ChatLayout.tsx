@@ -1,8 +1,10 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useChat } from '../context/ChatContext';
 import { ChatArea } from './ChatArea';
 import { Sidebar } from './Sidebar';
 
 export function ChatLayout() {
+  const { setOpenConversation } = useChat();
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [mobileView, setMobileView] = useState<'sidebar' | 'chat'>('sidebar');
@@ -22,6 +24,20 @@ export function ChatLayout() {
   const handleBack = useCallback(() => {
     setMobileView('sidebar');
   }, []);
+
+  // Unread/read-receipt logic keys off the conversation that is actually on
+  // screen, so mirror the visible selection here.
+  useEffect(() => {
+    if (mobileView !== 'chat') {
+      setOpenConversation(null);
+    } else if (selectedUser !== null) {
+      setOpenConversation({ kind: 'dm', username: selectedUser });
+    } else if (selectedGroup !== null) {
+      setOpenConversation({ kind: 'group', groupId: selectedGroup });
+    } else {
+      setOpenConversation(null);
+    }
+  }, [mobileView, selectedUser, selectedGroup, setOpenConversation]);
 
   return (
     <div className="app-shell flex bg-zinc-950">

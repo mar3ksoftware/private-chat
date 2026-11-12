@@ -30,7 +30,8 @@ function PresenceBadge({ online }: { readonly online: boolean }) {
 }
 
 export function GroupMembersPanel({ group, onClose }: GroupMembersPanelProps) {
-  const { user, users, directory, kickTallies, addMember, removeMember, voteKick } = useChat();
+  const { user, users, directory, kickTallies, addMember, removeMember, voteKick, displayNameOf } =
+    useChat();
   const [addQuery, setAddQuery] = useState('');
 
   const myMembership =
@@ -128,7 +129,12 @@ export function GroupMembersPanel({ group, onClose }: GroupMembersPanelProps) {
             className="flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-zinc-800/40"
           >
             <PresenceDot online={isOnline(member.username)} />
-            <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">{member.username}</span>
+            <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">
+              {displayNameOf(member.username)}
+              {displayNameOf(member.username) !== member.username && (
+                <span className="ml-1.5 text-xs text-zinc-500">{member.username}</span>
+              )}
+            </span>
             {member.isAdmin && (
               <span className="shrink-0 rounded-full bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-400">
                 admin
