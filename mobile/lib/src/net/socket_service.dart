@@ -73,6 +73,24 @@ abstract interface class SocketService {
   /// `group:kick:vote` — cast a vote to kick a member.
   void sendGroupKickVote(GroupTargetPayload payload);
 
+  /// `typing:send` — (de)activate our typing indicator in a conversation.
+  void sendTypingSend(TypingSendPayload payload);
+
+  /// `receipt:read` — mark a DM read up to a message timestamp.
+  void sendReceiptRead(ReceiptReadPayload payload);
+
+  /// `message:react` — toggle an emoji reaction on a message.
+  void sendReact(MessageReactPayload payload);
+
+  /// `message:edit` — replace an author-owned message body.
+  void sendEdit(MessageEditPayload payload);
+
+  /// `message:delete` — tombstone an author-owned message.
+  void sendDelete(MessageDeletePayload payload);
+
+  /// `profile:update` — publish our display name and status.
+  void sendProfileUpdate(ProfileUpdatePayload payload);
+
   // ── Inbound: server -> client ──────────────────────────────────────────
 
   /// `user:joined` — a user (possibly us) joined; broadcast to everyone.
@@ -137,6 +155,24 @@ abstract interface class SocketService {
 
   /// `media:token` — bearer token for the `/media` HTTP endpoints.
   Unsubscribe onMediaToken(void Function(MediaTokenPayload payload) handler);
+
+  /// `typing:changed` — someone started/stopped typing in a conversation.
+  Unsubscribe onTypingChanged(void Function(TypingChangedPayload payload) handler);
+
+  /// `receipt:read` — a peer marked their side of a DM read.
+  Unsubscribe onReceiptRead(void Function(ReceiptReadRelay payload) handler);
+
+  /// `message:reacted` — a reaction was added/removed on a message.
+  Unsubscribe onMessageReacted(void Function(MessageReactedPayload payload) handler);
+
+  /// `message:edited` — an author replaced a message body.
+  Unsubscribe onMessageEdited(void Function(MessageEditedPayload payload) handler);
+
+  /// `message:deleted` — an author tombstoned a message.
+  Unsubscribe onMessageDeleted(void Function(MessageDeletedPayload payload) handler);
+
+  /// `profile:updated` — a user changed their display name/status.
+  Unsubscribe onProfileUpdated(void Function(ProfileUpdatedPayload payload) handler);
 
   // ── Connection lifecycle listeners ─────────────────────────────────────
 
@@ -236,6 +272,36 @@ class IoSocketService implements SocketService {
   @override
   void sendGroupKickVote(GroupTargetPayload payload) {
     _socket.emit(ChatEvents.groupKickVote, payload.toJson());
+  }
+
+  @override
+  void sendTypingSend(TypingSendPayload payload) {
+    _socket.emit(ChatEvents.typingSend, payload.toJson());
+  }
+
+  @override
+  void sendReceiptRead(ReceiptReadPayload payload) {
+    _socket.emit(ChatEvents.receiptRead, payload.toJson());
+  }
+
+  @override
+  void sendReact(MessageReactPayload payload) {
+    _socket.emit(ChatEvents.messageReact, payload.toJson());
+  }
+
+  @override
+  void sendEdit(MessageEditPayload payload) {
+    _socket.emit(ChatEvents.messageEdit, payload.toJson());
+  }
+
+  @override
+  void sendDelete(MessageDeletePayload payload) {
+    _socket.emit(ChatEvents.messageDelete, payload.toJson());
+  }
+
+  @override
+  void sendProfileUpdate(ProfileUpdatePayload payload) {
+    _socket.emit(ChatEvents.profileUpdate, payload.toJson());
   }
 
   // ── Inbound ────────────────────────────────────────────────────────────
@@ -386,6 +452,48 @@ class IoSocketService implements SocketService {
   Unsubscribe onMediaToken(void Function(MediaTokenPayload payload) handler) {
     return _on(ChatEvents.mediaToken, (data) {
       handler(MediaTokenPayload.fromJson(asJsonMap(data)));
+    });
+  }
+
+  @override
+  Unsubscribe onTypingChanged(void Function(TypingChangedPayload payload) handler) {
+    return _on(ChatEvents.typingChanged, (data) {
+      handler(TypingChangedPayload.fromJson(asJsonMap(data)));
+    });
+  }
+
+  @override
+  Unsubscribe onReceiptRead(void Function(ReceiptReadRelay payload) handler) {
+    return _on(ChatEvents.receiptReadIn, (data) {
+      handler(ReceiptReadRelay.fromJson(asJsonMap(data)));
+    });
+  }
+
+  @override
+  Unsubscribe onMessageReacted(void Function(MessageReactedPayload payload) handler) {
+    return _on(ChatEvents.messageReacted, (data) {
+      handler(MessageReactedPayload.fromJson(asJsonMap(data)));
+    });
+  }
+
+  @override
+  Unsubscribe onMessageEdited(void Function(MessageEditedPayload payload) handler) {
+    return _on(ChatEvents.messageEdited, (data) {
+      handler(MessageEditedPayload.fromJson(asJsonMap(data)));
+    });
+  }
+
+  @override
+  Unsubscribe onMessageDeleted(void Function(MessageDeletedPayload payload) handler) {
+    return _on(ChatEvents.messageDeleted, (data) {
+      handler(MessageDeletedPayload.fromJson(asJsonMap(data)));
+    });
+  }
+
+  @override
+  Unsubscribe onProfileUpdated(void Function(ProfileUpdatedPayload payload) handler) {
+    return _on(ChatEvents.profileUpdated, (data) {
+      handler(ProfileUpdatedPayload.fromJson(asJsonMap(data)));
     });
   }
 

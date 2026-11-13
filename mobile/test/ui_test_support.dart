@@ -39,6 +39,9 @@ class FakeSocketService implements SocketService {
     ];
   }
 
+  /// How many times [event] was emitted.
+  int countOf(String event) => payloadsOf(event).length;
+
   /// Simulates an inbound event (or a lifecycle event) arriving.
   void fire(String event, [Object? payload]) {
     if (event == ChatEvents.connect) isConnected = true;
@@ -119,6 +122,28 @@ class FakeSocketService implements SocketService {
   @override
   void sendGroupKickVote(GroupTargetPayload payload) =>
       _record(ChatEvents.groupKickVote, payload);
+
+  @override
+  void sendTypingSend(TypingSendPayload payload) =>
+      _record(ChatEvents.typingSend, payload);
+
+  @override
+  void sendReceiptRead(ReceiptReadPayload payload) =>
+      _record(ChatEvents.receiptRead, payload);
+
+  @override
+  void sendReact(MessageReactPayload payload) => _record(ChatEvents.messageReact, payload);
+
+  @override
+  void sendEdit(MessageEditPayload payload) => _record(ChatEvents.messageEdit, payload);
+
+  @override
+  void sendDelete(MessageDeletePayload payload) =>
+      _record(ChatEvents.messageDelete, payload);
+
+  @override
+  void sendProfileUpdate(ProfileUpdatePayload payload) =>
+      _record(ChatEvents.profileUpdate, payload);
 
   // ── Inbound ────────────────────────────────────────────────────────────
 
@@ -260,6 +285,48 @@ class FakeSocketService implements SocketService {
   Unsubscribe onMediaToken(void Function(MediaTokenPayload payload) handler) {
     return _register(ChatEvents.mediaToken, (data) {
       handler(data! as MediaTokenPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onTypingChanged(void Function(TypingChangedPayload payload) handler) {
+    return _register(ChatEvents.typingChanged, (data) {
+      handler(data! as TypingChangedPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onReceiptRead(void Function(ReceiptReadRelay payload) handler) {
+    return _register(ChatEvents.receiptReadIn, (data) {
+      handler(data! as ReceiptReadRelay);
+    });
+  }
+
+  @override
+  Unsubscribe onMessageReacted(void Function(MessageReactedPayload payload) handler) {
+    return _register(ChatEvents.messageReacted, (data) {
+      handler(data! as MessageReactedPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onMessageEdited(void Function(MessageEditedPayload payload) handler) {
+    return _register(ChatEvents.messageEdited, (data) {
+      handler(data! as MessageEditedPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onMessageDeleted(void Function(MessageDeletedPayload payload) handler) {
+    return _register(ChatEvents.messageDeleted, (data) {
+      handler(data! as MessageDeletedPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onProfileUpdated(void Function(ProfileUpdatedPayload payload) handler) {
+    return _register(ChatEvents.profileUpdated, (data) {
+      handler(data! as ProfileUpdatedPayload);
     });
   }
 

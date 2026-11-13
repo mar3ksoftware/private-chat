@@ -49,7 +49,7 @@ void main() {
         () => bob.messagesForPeer(aName).isNotEmpty,
         'bob received message',
       );
-      expect(bob.messagesForPeer(aName).last.plaintext, 'hello from alice e2e');
+      expect(bob.messagesForPeer(aName).last.body, 'hello from alice e2e');
 
       expect(
         await bob.sendMessage(aName, 'reply from bob'),
@@ -65,13 +65,13 @@ void main() {
       await _waitFor(
         () => alice
             .messagesForPeer(bName)
-            .any((m) => !m.isOwn && m.plaintext == 'reply from bob'),
+            .any((m) => !m.isOwn && m.body == 'reply from bob'),
         'alice decrypted bob reply',
       );
       final reply = alice
           .messagesForPeer(bName)
           .lastWhere((m) => !m.isOwn);
-      expect(reply.plaintext, 'reply from bob');
+      expect(reply.body, 'reply from bob');
     },
     timeout: const Timeout(Duration(seconds: 30)),
     skip: !live,
