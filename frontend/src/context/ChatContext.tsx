@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef } from 'react';
 import { E2eeSession } from '../lib/e2ee-session';
-import { parseEnvelope, wrapTextEnvelope } from '../lib/envelope';
+import { parseEnvelope, wrapPollEnvelope, wrapTextEnvelope } from '../lib/envelope';
 import { clearMediaCache, MediaError, prepareAndUpload } from '../lib/media';
 import { mentionsMe } from '../lib/mentions';
 import { validateProfile } from '../lib/profile';
@@ -13,6 +13,7 @@ import type {
   GroupInfo,
   KickTally,
   LoginPayload,
+  PollState,
   PrivateMessage,
   ProfileEntry,
   ReactionAgg,
@@ -54,6 +55,8 @@ type ChatState = {
   // Conversation-scoped typing keys → expiry timestamp of the last active flag.
   readonly typing: Readonly<Record<string, number>>;
   readonly profiles: Readonly<Record<string, ProfileEntry>>;
+  // pollId → tallies + closed flag; polls live only in ciphertext (B3).
+  readonly polls: Readonly<Record<string, PollState>>;
 };
 
 const initialState: ChatState = {
@@ -72,6 +75,7 @@ const initialState: ChatState = {
   readUpTo: {},
   typing: {},
   profiles: {},
+  polls: {},
 };
 
 type ChatAction =
@@ -134,7 +138,19 @@ type ChatAction =
         readonly edited: boolean;
       };
     }
-  | { type: 'DELETE_MESSAGE'; payload: { readonly targetId: string; readonly deleted: boolean } };
+  | { type: 'DELETE_MESSAGE'; payload: { readonly targetId: string; readonly deleted: boolean } }
+  | {
+      type: 'SET_POLL_VOTE';
+      payload: {
+        readonly pollId: string;
+        readonly username: string;
+        readonly option: number | null;
+      };
+    }
+  | {
+      type: 'SET_POLL_CLOSED';
+      payload: { readonly pollId: string; readonly closed: boolean };
+    };
 
 function unreadKeyFor(target: ConversationTarget): string {
   return target.kind === 'dm' ? `dm:${target.username}` : `group:${target.groupId}`;
@@ -161,6 +177,7 @@ function reducer(state: ChatState, action: ChatAction): ChatState {
         readUpTo: {},
         typing: {},
         profiles: {},
+        polls: {},
       };
     case 'SET_USERS':
       return { ...state, users: action.payload };
@@ -329,6 +346,35 @@ function reducer(state: ChatState, action: ChatAction): ChatState {
         groupMessages: state.groupMessages.map(applyToGroupMessage),
       };
     }
+    case 'SET_POLL_VOTE': {
+      const { pollId, username, option } = action.payload;
+      const existing = state.polls[pollId];
+      const tallies: Record<string, number> = { ...(existing?.tallies ?? {}) };
+      if (option === null) {
+        // Rollback of an optimistic vote that never had a prior choice.
+        if (!(username in tallies)) return state;
+        delete tallies[username];
+      } else {
+        // Last write wins: a later vote replaces the same voter's earlier one.
+        tallies[username] = option;
+      }
+      return {
+        ...state,
+        polls: { ...state.polls, [pollId]: { tallies, closed: existing?.closed ?? false } },
+      };
+    }
+    case 'SET_POLL_CLOSED': {
+      const { pollId, closed } = action.payload;
+      const existing = state.polls[pollId];
+      if ((existing?.closed ?? false) === closed) return state;
+      return {
+        ...state,
+        polls: {
+          ...state.polls,
+          [pollId]: { tallies: existing?.tallies ?? {}, closed },
+        },
+      };
+    }
     default:
       return state;
   }
@@ -343,12 +389,18 @@ function bodyOfPlaintext(
   readonly body: string;
   readonly reply: ReplyRef | null;
   readonly media: DecryptedMessage['media'];
+  readonly poll: DecryptedMessage['poll'];
 } {
-  if (decryptionFailed) return { body: '', reply: null, media: null };
+  // Poll questions stay out of `body` on purpose: unread/mention parsing
+  // never sees them (C5), and the reply excerpt reads `poll.question`.
+  if (decryptionFailed) return { body: '', reply: null, media: null, poll: null };
   const parsed = parseEnvelope(plaintext);
-  if (parsed.kind === 'media') return { body: '', reply: null, media: parsed.descriptor };
-  if (parsed.kind === 'text') return { body: parsed.body, reply: parsed.reply, media: null };
-  return { body: parsed.text, reply: null, media: null };
+  if (parsed.kind === 'media')
+    return { body: '', reply: null, media: parsed.descriptor, poll: null };
+  if (parsed.kind === 'text')
+    return { body: parsed.body, reply: parsed.reply, media: null, poll: null };
+  if (parsed.kind === 'poll') return { body: '', reply: null, media: null, poll: parsed.poll };
+  return { body: parsed.text, reply: null, media: null, poll: null };
 }
 
 function buildDecryptedMessage(
@@ -373,6 +425,7 @@ function buildDecryptedMessage(
     isOwn,
     decryptionFailed,
     media: unwrapped.media,
+    poll: unwrapped.poll,
   };
 }
 
@@ -403,6 +456,7 @@ function buildDecryptedGroupMessage(
     isOwn,
     decryptionFailed,
     media: unwrapped.media,
+    poll: unwrapped.poll,
   };
 }
 
@@ -462,7 +516,16 @@ export type ChatContextValue = {
     body: string,
     reply?: ReplyRef | null,
   ) => Promise<boolean>;
-  readonly sendMediaMessage: (toUsername: string, file: File) => Promise<boolean>;
+  readonly sendMediaMessage: (
+    toUsername: string,
+    file: File,
+    durationSeconds?: number,
+  ) => Promise<boolean>;
+  readonly sendPollMessage: (
+    toUsername: string,
+    question: string,
+    options: readonly string[],
+  ) => Promise<boolean>;
   readonly groups: readonly GroupInfo[];
   readonly groupMessages: readonly DecryptedGroupMessage[];
   readonly directory: readonly string[];
@@ -473,7 +536,16 @@ export type ChatContextValue = {
     body: string,
     reply?: ReplyRef | null,
   ) => Promise<boolean>;
-  readonly sendGroupMediaMessage: (groupId: string, file: File) => Promise<boolean>;
+  readonly sendGroupMediaMessage: (
+    groupId: string,
+    file: File,
+    durationSeconds?: number,
+  ) => Promise<boolean>;
+  readonly sendGroupPollMessage: (
+    groupId: string,
+    question: string,
+    options: readonly string[],
+  ) => Promise<boolean>;
   readonly mediaToken: string | null;
   readonly addMember: (groupId: string, username: string) => void;
   readonly removeMember: (groupId: string, username: string) => void;
@@ -498,6 +570,9 @@ export type ChatContextValue = {
     reply: ReplyRef | null,
   ) => Promise<boolean>;
   readonly deleteMessage: (target: ConversationTarget, targetId: string) => void;
+  readonly polls: Readonly<Record<string, PollState>>;
+  readonly votePoll: (target: ConversationTarget, pollId: string, option: number) => void;
+  readonly closePoll: (target: ConversationTarget, pollId: string) => void;
   readonly updateProfile: (displayName: string, status: string) => void;
 };
 
@@ -783,7 +858,13 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       reply: ReplyRef | null,
     ): Promise<boolean> => {
       const original = findMessageById(targetId);
-      if (original === undefined || !original.isOwn || original.media != null || original.deleted) {
+      if (
+        original === undefined ||
+        !original.isOwn ||
+        original.media != null ||
+        original.poll != null ||
+        original.deleted
+      ) {
         return false;
       }
 
@@ -864,6 +945,45 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       enqueueOp(() => dispatch({ type: 'DELETE_MESSAGE', payload: { targetId, deleted: false } }));
       dispatch({ type: 'DELETE_MESSAGE', payload: { targetId, deleted: true } });
       socketRef.current.emit(EVENTS.CLIENT.MESSAGE_DELETE, { ...scopePayload(target), targetId });
+    },
+    [enqueueOp, findMessageById],
+  );
+
+  const votePoll = useCallback(
+    (target: ConversationTarget, pollId: string, option: number) => {
+      const me = stateRef.current.user?.username;
+      if (me === undefined) return;
+      const message = findMessageById(pollId);
+      if (message === undefined || message.poll === null || message.deleted) return;
+      if (option < 0 || option >= message.poll.options.length) return;
+      if (stateRef.current.polls[pollId]?.closed === true) return;
+
+      const previous = stateRef.current.polls[pollId]?.tallies[me];
+      enqueueOp(() =>
+        dispatch({
+          type: 'SET_POLL_VOTE',
+          payload: { pollId, username: me, option: previous ?? null },
+        }),
+      );
+      dispatch({ type: 'SET_POLL_VOTE', payload: { pollId, username: me, option } });
+      socketRef.current.emit(EVENTS.CLIENT.POLL_VOTE, { ...scopePayload(target), pollId, option });
+    },
+    [enqueueOp, findMessageById],
+  );
+
+  const closePoll = useCallback(
+    (target: ConversationTarget, pollId: string) => {
+      const me = stateRef.current.user?.username;
+      if (me === undefined) return;
+      const message = findMessageById(pollId);
+      // Closing is author-only on the client (B3) — the server relays blindly.
+      if (message === undefined || message.poll === null || message.deleted) return;
+      if (!message.isOwn || message.fromUsername !== me) return;
+      if (stateRef.current.polls[pollId]?.closed === true) return;
+
+      enqueueOp(() => dispatch({ type: 'SET_POLL_CLOSED', payload: { pollId, closed: false } }));
+      dispatch({ type: 'SET_POLL_CLOSED', payload: { pollId, closed: true } });
+      socketRef.current.emit(EVENTS.CLIENT.POLL_CLOSE, { ...scopePayload(target), pollId });
     },
     [enqueueOp, findMessageById],
   );
@@ -1009,9 +1129,13 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
   );
 
   const prepareMediaEnvelope = useCallback(
-    async (file: File): Promise<string | null> => {
+    async (file: File, durationSeconds?: number): Promise<string | null> => {
       try {
-        const descriptor = await prepareAndUpload(file, mediaTokenRef.current ?? '');
+        const descriptor = await prepareAndUpload(
+          file,
+          mediaTokenRef.current ?? '',
+          durationSeconds,
+        );
         return JSON.stringify(descriptor);
       } catch (error) {
         showError(error instanceof MediaError ? error.message : 'Upload failed. Please try again.');
@@ -1022,8 +1146,8 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
   );
 
   const sendMediaMessage = useCallback(
-    async (toUsername: string, file: File): Promise<boolean> => {
-      const envelope = await prepareMediaEnvelope(file);
+    async (toUsername: string, file: File, durationSeconds?: number): Promise<boolean> => {
+      const envelope = await prepareMediaEnvelope(file, durationSeconds);
       if (envelope === null) return false;
       // Media descriptors stay unwrapped — the parser branches on t first.
       return sendEncrypted(toUsername, envelope);
@@ -1032,12 +1156,31 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
   );
 
   const sendGroupMediaMessage = useCallback(
-    async (groupId: string, file: File): Promise<boolean> => {
-      const envelope = await prepareMediaEnvelope(file);
+    async (groupId: string, file: File, durationSeconds?: number): Promise<boolean> => {
+      const envelope = await prepareMediaEnvelope(file, durationSeconds);
       if (envelope === null) return false;
       return sendGroupEncrypted(groupId, envelope);
     },
     [prepareMediaEnvelope, sendGroupEncrypted],
+  );
+
+  // Polls ride the normal message:send path; only the envelope shape differs.
+  const sendPollMessage = useCallback(
+    (toUsername: string, question: string, options: readonly string[]): Promise<boolean> => {
+      const envelope = wrapPollEnvelope(question, options);
+      if (envelope === null) return Promise.resolve(false);
+      return sendEncrypted(toUsername, envelope);
+    },
+    [sendEncrypted],
+  );
+
+  const sendGroupPollMessage = useCallback(
+    (groupId: string, question: string, options: readonly string[]): Promise<boolean> => {
+      const envelope = wrapPollEnvelope(question, options);
+      if (envelope === null) return Promise.resolve(false);
+      return sendGroupEncrypted(groupId, envelope);
+    },
+    [sendGroupEncrypted],
   );
 
   useEffect(() => {
@@ -1067,6 +1210,7 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       const isOpen = open !== null && open.kind === 'dm' && open.username === msg.fromUsername;
       const mention =
         !built.decryptionFailed &&
+        built.poll === null &&
         snapshot.user !== null &&
         mentionsMe(built.body, knownUsernames(), snapshot.user.username, false);
       // Unread: count when the DM is closed or the window is in the back
@@ -1090,6 +1234,7 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       const isOpen = open !== null && open.kind === 'group' && open.groupId === groupId;
       const mention =
         !built.decryptionFailed &&
+        built.poll === null &&
         snapshot.user !== null &&
         mentionsMe(built.body, knownUsernames(), snapshot.user.username, true);
       if (mention || !isOpen || !appIsFocused()) {
@@ -1435,12 +1580,12 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
       // The relay is stateless: only the original author may edit, and only
       // when the original was a text message (spec B author enforcement).
       if (original.fromUsername !== payload.fromUsername) return;
-      if (original.media != null || original.deleted) return;
+      if (original.media != null || original.poll != null || original.deleted) return;
 
       e2eeRef.current.decrypt(payload.fromUsername, payload.ciphertext, payload.iv).then(
         (plaintext) => {
           const parsed = parseEnvelope(plaintext);
-          if (parsed.kind === 'media') return;
+          if (parsed.kind === 'media' || parsed.kind === 'poll') return;
           const body = parsed.kind === 'text' ? parsed.body : parsed.text;
           const reply = parsed.kind === 'text' ? parsed.reply : null;
           dispatch({
@@ -1463,6 +1608,46 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
         type: 'DELETE_MESSAGE',
         payload: { targetId: payload.targetId, deleted: true },
       });
+    });
+
+    // ── Poll events (B3): the server relays blindly, so every validity
+    // rule below is enforced here against the decrypted poll definition.
+
+    const findPollMessage = (pollId: string) => {
+      const snapshot = stateRef.current;
+      return (
+        snapshot.messages.find((m) => m.id === pollId) ??
+        snapshot.groupMessages.find((m) => m.id === pollId)
+      );
+    };
+
+    socket.on(EVENTS.SERVER.POLL_VOTED, (payload) => {
+      const message = findPollMessage(payload.pollId);
+      // Unknown polls and tombstoned messages drop silently (C3).
+      if (message === undefined || message.poll === null || message.deleted) return;
+      if (stateRef.current.polls[payload.pollId]?.closed === true) return;
+      // Our own vote was applied optimistically before the relay excluded us.
+      if (payload.u === stateRef.current.user?.username) return;
+      if (
+        !Number.isInteger(payload.option) ||
+        payload.option < 0 ||
+        payload.option >= message.poll.options.length
+      ) {
+        return;
+      }
+      dispatch({
+        type: 'SET_POLL_VOTE',
+        payload: { pollId: payload.pollId, username: payload.u, option: payload.option },
+      });
+    });
+
+    socket.on(EVENTS.SERVER.POLL_CLOSED, (payload) => {
+      const message = findPollMessage(payload.pollId);
+      if (message === undefined || message.poll === null || message.deleted) return;
+      // Only the poll author's close is applied; anything else is ignored.
+      if (payload.u !== message.fromUsername) return;
+      if (stateRef.current.polls[payload.pollId]?.closed === true) return;
+      dispatch({ type: 'SET_POLL_CLOSED', payload: { pollId: payload.pollId, closed: true } });
     });
 
     socket.on(EVENTS.SERVER.PROFILE_UPDATED, (payload) => {
@@ -1508,6 +1693,7 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     messages: state.messages,
     sendMessage,
     sendMediaMessage,
+    sendPollMessage,
     groups: state.groups,
     groupMessages: state.groupMessages,
     directory: state.directory,
@@ -1515,6 +1701,7 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     createGroup,
     sendGroupMessage,
     sendGroupMediaMessage,
+    sendGroupPollMessage,
     mediaToken: mediaTokenRef.current,
     addMember,
     removeMember,
@@ -1533,6 +1720,9 @@ export function ChatProvider({ children }: { readonly children: ReactNode }) {
     toggleReaction,
     editMessage,
     deleteMessage,
+    polls: state.polls,
+    votePoll,
+    closePoll,
     updateProfile,
   };
 

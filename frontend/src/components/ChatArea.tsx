@@ -18,10 +18,12 @@ export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: Chat
     messages,
     sendMessage,
     sendMediaMessage,
+    sendPollMessage,
     groupMessages,
     groups,
     sendGroupMessage,
     sendGroupMediaMessage,
+    sendGroupPollMessage,
     logout,
     connectionStatus,
     user,
@@ -88,6 +90,27 @@ export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: Chat
     return Promise.resolve(false);
   };
 
+  const handlePollSend = (question: string, options: readonly string[]): Promise<boolean> => {
+    if (selectedUser !== null) {
+      return sendPollMessage(selectedUser, question, options);
+    }
+    if (selectedGroup !== null) {
+      return sendGroupPollMessage(selectedGroup, question, options);
+    }
+    return Promise.resolve(false);
+  };
+
+  // Voice notes ride the same media pipeline, plus their duration (B2).
+  const handleVoice = (file: File, durationSeconds: number): Promise<boolean> => {
+    if (selectedUser !== null) {
+      return sendMediaMessage(selectedUser, file, durationSeconds);
+    }
+    if (selectedGroup !== null) {
+      return sendGroupMediaMessage(selectedGroup, file, durationSeconds);
+    }
+    return Promise.resolve(false);
+  };
+
   const handleTyping = () => {
     if (conversationTarget !== null) sendTyping(conversationTarget);
   };
@@ -144,6 +167,8 @@ export function ChatArea({ selectedUser, selectedGroup, onBack, showBack }: Chat
           <MessageInput
             onSend={handleSend}
             onAttach={handleAttach}
+            onSendPoll={handlePollSend}
+            onSendVoice={handleVoice}
             disabled={connectionStatus !== 'connected'}
             reply={reply}
             onClearReply={() => setReply(null)}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useChat } from '../context/ChatContext';
 import { downloadAndDecrypt, getCached, putCached } from '../lib/media';
 import type { MediaDescriptor } from '../types';
+import { AudioAttachment } from './AudioAttachment';
 
 type MediaAttachmentProps = {
   readonly descriptor: MediaDescriptor;
@@ -48,6 +49,10 @@ export function MediaAttachment({ descriptor }: MediaAttachmentProps) {
   }, [descriptor, mediaToken]);
 
   if (status === 'ready' && blobUrl !== null) {
+    // Voice bubbles dispatch before the image/video branches (C7).
+    if (descriptor.mime.startsWith('audio/')) {
+      return <AudioAttachment descriptor={descriptor} blobUrl={blobUrl} />;
+    }
     if (descriptor.mime.startsWith('image/')) {
       return <img src={blobUrl} className="max-h-80 rounded-lg" alt={descriptor.name ?? 'Image'} />;
     }

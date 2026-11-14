@@ -49,10 +49,25 @@ export type TextEnvelope = {
   readonly r?: ReplyRef;
 };
 
-// Result of the ordered envelope parse (C3): media → text → legacy raw.
+// Poll definition carried inside the E2EE plaintext (B1) — the server only
+// ever relays the ciphertext, never the question or options.
+export type PollEnvelope = {
+  readonly t: 'poll';
+  readonly q: string;
+  readonly o: readonly string[];
+};
+
+// Decrypted poll definition attached to a message for the UI.
+export type PollDefinition = {
+  readonly question: string;
+  readonly options: readonly string[];
+};
+
+// Result of the ordered envelope parse (C3): media → text → poll → legacy raw.
 export type ParsedEnvelope =
   | { readonly kind: 'media'; readonly descriptor: MediaDescriptor }
   | { readonly kind: 'text'; readonly body: string; readonly reply: ReplyRef | null }
+  | { readonly kind: 'poll'; readonly poll: PollDefinition }
   | { readonly kind: 'raw'; readonly text: string };
 
 // Decrypted view of a PrivateMessage (what the UI renders)
@@ -72,6 +87,7 @@ export type DecryptedMessage = {
   readonly isOwn: boolean;
   readonly decryptionFailed: boolean;
   readonly media: MediaDescriptor | null;
+  readonly poll: PollDefinition | null;
 };
 
 // ── Media types ──
@@ -93,6 +109,8 @@ export type MediaDescriptor = {
   readonly w?: number;
   readonly h?: number;
   readonly name?: string;
+  // Voice duration in seconds; present only when 0 < d <= 300 (B2).
+  readonly d?: number;
 };
 
 // ── Group types ──
@@ -151,6 +169,7 @@ export type DecryptedGroupMessage = {
   readonly isOwn: boolean;
   readonly decryptionFailed: boolean;
   readonly media: MediaDescriptor | null;
+  readonly poll: PollDefinition | null;
 };
 
 export type GroupTargetPayload = {
@@ -265,6 +284,46 @@ export type ProfileUpdatedPayload = {
   readonly status: string;
 };
 
+// ── Poll relay payloads ──
+// Mirrors backend/src/types.ts one-for-one (spec B3).
+
+export type PollVotePayload = {
+  readonly pollId: string;
+  readonly option: number;
+  readonly to?: string;
+  readonly groupId?: string;
+};
+
+export type PollClosePayload = {
+  readonly pollId: string;
+  readonly to?: string;
+  readonly groupId?: string;
+};
+
+export type PollVotedPayload = {
+  readonly pollId: string;
+  readonly option: number;
+  readonly u: string;
+  readonly to?: string;
+  readonly groupId?: string;
+};
+
+export type PollClosedPayload = {
+  readonly pollId: string;
+  readonly u: string;
+  readonly to?: string;
+  readonly groupId?: string;
+};
+
+// ── Client-side poll state ──
+
+// pollId → voter username → chosen option index (last write wins), plus the
+// closed flag applied optimistically or from `poll:closed` (C3/C4).
+export type PollState = {
+  readonly tallies: Readonly<Record<string, number>>;
+  readonly closed: boolean;
+};
+
 // ── Client-side tier-1 state shapes ──
 
 // A conversation as addressed by client features (typing, reactions, unread).
@@ -362,6 +421,8 @@ export type ClientToServerEvents = {
   'message:react': (payload: MessageReactPayload) => void;
   'message:edit': (payload: MessageEditPayload) => void;
   'message:delete': (payload: MessageDeletePayload) => void;
+  'poll:vote': (payload: PollVotePayload) => void;
+  'poll:close': (payload: PollClosePayload) => void;
   'profile:update': (payload: ProfileUpdatePayload) => void;
 };
 
@@ -392,6 +453,8 @@ export type ServerToClientEvents = {
   'message:reacted': (payload: MessageReactedPayload) => void;
   'message:edited': (payload: MessageEditedPayload) => void;
   'message:deleted': (payload: MessageDeletedPayload) => void;
+  'poll:voted': (payload: PollVotedPayload) => void;
+  'poll:closed': (payload: PollClosedPayload) => void;
   'profile:updated': (payload: ProfileUpdatedPayload) => void;
 };
 
@@ -414,6 +477,8 @@ export const EVENTS = {
     MESSAGE_REACT: 'message:react',
     MESSAGE_EDIT: 'message:edit',
     MESSAGE_DELETE: 'message:delete',
+    POLL_VOTE: 'poll:vote',
+    POLL_CLOSE: 'poll:close',
     PROFILE_UPDATE: 'profile:update',
   },
   SERVER: {
@@ -443,6 +508,8 @@ export const EVENTS = {
     MESSAGE_REACTED: 'message:reacted',
     MESSAGE_EDITED: 'message:edited',
     MESSAGE_DELETED: 'message:deleted',
+    POLL_VOTED: 'poll:voted',
+    POLL_CLOSED: 'poll:closed',
     PROFILE_UPDATED: 'profile:updated',
   },
 } as const;

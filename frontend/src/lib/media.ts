@@ -15,6 +15,9 @@ export const MEDIA_MIME_ALLOWLIST: readonly string[] = [
   'video/mp4',
   'video/webm',
   'video/quicktime',
+  'audio/mp4',
+  'audio/webm',
+  'audio/mpeg',
 ];
 
 const EXTENSION_MIME: Readonly<Record<string, string>> = {
@@ -25,6 +28,8 @@ const EXTENSION_MIME: Readonly<Record<string, string>> = {
   mp4: 'video/mp4',
   webm: 'video/webm',
   mov: 'video/quicktime',
+  m4a: 'audio/mp4',
+  mp3: 'audio/mpeg',
 };
 
 export function mimeForFileName(name: string): string | null {
@@ -116,6 +121,14 @@ export function parseMediaEnvelope(plaintext: string): MediaDescriptor | null {
   const rawName = fields['name'];
   if (rawName !== undefined && typeof rawName !== 'string') return null;
 
+  // Voice duration: a bad value drops the field instead of rejecting the
+  // whole message (B2) — the bubble just shows no duration.
+  const rawDuration = fields['d'];
+  const duration =
+    typeof rawDuration === 'number' && rawDuration > 0 && rawDuration <= 300
+      ? rawDuration
+      : undefined;
+
   const base = {
     t: 'media' as const,
     v: 1 as const,
@@ -125,6 +138,7 @@ export function parseMediaEnvelope(plaintext: string): MediaDescriptor | null {
     sha256,
     mime,
     size,
+    ...(duration !== undefined ? { d: duration } : {}),
   };
   if (width !== undefined && height !== undefined) {
     if (typeof rawName === 'string') return { ...base, w: width, h: height, name: rawName };
@@ -349,7 +363,11 @@ async function readErrorCode(response: Response): Promise<string | null> {
   }
 }
 
-export async function prepareAndUpload(file: File, token: string): Promise<MediaDescriptor> {
+export async function prepareAndUpload(
+  file: File,
+  token: string,
+  durationSeconds?: number,
+): Promise<MediaDescriptor> {
   try {
     if (token.length === 0) throw new MediaError('Not connected. Please try again.');
 
@@ -396,12 +414,19 @@ export async function prepareAndUpload(file: File, token: string): Promise<Media
       size: payload.length,
     };
     const name = sanitizeFileName(file.name);
+    // Voice recordings carry their duration; anything outside (0, 300] is
+    // dropped so the descriptor always stays parseable (B2).
+    const duration =
+      durationSeconds !== undefined && durationSeconds > 0 && durationSeconds <= 300
+        ? durationSeconds
+        : undefined;
+    const withDuration = duration !== undefined ? { ...base, d: duration } : base;
     if (width !== undefined && height !== undefined) {
-      if (name.length > 0) return { ...base, w: width, h: height, name };
-      return { ...base, w: width, h: height };
+      if (name.length > 0) return { ...withDuration, w: width, h: height, name };
+      return { ...withDuration, w: width, h: height };
     }
-    if (name.length > 0) return { ...base, name };
-    return base;
+    if (name.length > 0) return { ...withDuration, name };
+    return withDuration;
   } catch (error) {
     if (error instanceof MediaError) throw error;
     throw new MediaError('Upload failed. Please try again.');

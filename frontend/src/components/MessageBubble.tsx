@@ -13,6 +13,7 @@ import type {
 import { REACTION_EMOJIS } from '../types';
 import { LinkifiedText } from './LinkifiedText';
 import { MediaAttachment } from './MediaAttachment';
+import { PollBubble } from './PollBubble';
 
 type MessageBubbleProps = {
   readonly message: DecryptedMessage | DecryptedGroupMessage;
@@ -114,6 +115,7 @@ export function MessageBubble({ message, showSender, onReply }: MessageBubblePro
   const isDeleted = message.deleted;
   const isOwn = message.isOwn;
   const isMedia = message.media != null && !message.decryptionFailed;
+  const isPoll = message.poll != null && !message.decryptionFailed;
 
   // The inline editor replaces the bubble body — focus it once it mounts.
   useEffect(() => {
@@ -147,7 +149,8 @@ export function MessageBubble({ message, showSender, onReply }: MessageBubblePro
     };
   }, [menuOpen, pickerOpen]);
 
-  const canEdit = isOwn && !isDeleted && !isMedia && !message.decryptionFailed;
+  // Polls are not text, so the edit guard excludes them alongside media (C5).
+  const canEdit = isOwn && !isDeleted && !isMedia && !isPoll && !message.decryptionFailed;
   const canDelete = isOwn && !isDeleted;
   const canReply = !isDeleted;
   const canReact = !isDeleted;
@@ -171,7 +174,7 @@ export function MessageBubble({ message, showSender, onReply }: MessageBubblePro
     onReply({
       id: message.id,
       u: message.fromUsername,
-      e: replyExcerptFor(message.body, message.media ?? null),
+      e: replyExcerptFor(message.body, message.media ?? null, message.poll ?? null),
     });
     setMenuOpen(false);
     setPickerOpen(false);
@@ -324,6 +327,8 @@ export function MessageBubble({ message, showSender, onReply }: MessageBubblePro
           </div>
         ) : isMedia ? (
           <MediaAttachment descriptor={message.media} />
+        ) : isPoll ? (
+          <PollBubble message={message} target={target} />
         ) : (
           <div className="flex flex-col gap-1.5">
             {message.reply !== null && (
