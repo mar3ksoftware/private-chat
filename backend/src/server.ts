@@ -30,6 +30,8 @@ import {
   validateMessageId,
   validateMessagePayload,
   validateMessageReactPayload,
+  validatePollClosePayload,
+  validatePollVotePayload,
   validateProfileUpdatePayload,
   validateReceiptReadPayload,
   validateRegisterPayload,
@@ -968,6 +970,73 @@ export function createServer(
           ...scopeOf(resolved.conversation),
           targetId: valResult.data.targetId,
           timestamp: Date.now(),
+        });
+      });
+    });
+
+    socket.on(EVENTS.CLIENT.POLL_VOTE, (payload) => {
+      const rlResult = rateLimiters.check(socket.id);
+      if (!rlResult.allowed) {
+        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, { reason: 'Rate limit exceeded' });
+        return;
+      }
+
+      const valResult = validatePollVotePayload(payload);
+      if (!valResult.success) {
+        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, { reason: valResult.errors.join(', ') });
+        return;
+      }
+
+      const sender = userRegistry.getUserBySocketId(SocketId(socket.id));
+      if (sender === undefined) return;
+
+      const resolved = resolveConversation(sender, valResult.data);
+      if (resolved.reason !== undefined) {
+        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, { reason: resolved.reason });
+        return;
+      }
+
+      // Poll definitions live inside the ciphertext, so the server relays the
+      // vote blindly — no poll existence check, clients drop unknown pollIds.
+      fanOutExceptSender(sender.userId, resolved.conversation, (room) => {
+        io.to(room).emit(EVENTS.SERVER.POLL_VOTED, {
+          pollId: valResult.data.pollId,
+          option: valResult.data.option,
+          u: sender.username,
+          ...scopeOf(resolved.conversation),
+        });
+      });
+    });
+
+    socket.on(EVENTS.CLIENT.POLL_CLOSE, (payload) => {
+      const rlResult = rateLimiters.check(socket.id);
+      if (!rlResult.allowed) {
+        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, { reason: 'Rate limit exceeded' });
+        return;
+      }
+
+      const valResult = validatePollClosePayload(payload);
+      if (!valResult.success) {
+        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, { reason: valResult.errors.join(', ') });
+        return;
+      }
+
+      const sender = userRegistry.getUserBySocketId(SocketId(socket.id));
+      if (sender === undefined) return;
+
+      const resolved = resolveConversation(sender, valResult.data);
+      if (resolved.reason !== undefined) {
+        socket.emit(EVENTS.SERVER.MESSAGE_REJECTED, { reason: resolved.reason });
+        return;
+      }
+
+      // No server-side authorship check on close — ciphertext is opaque, so
+      // clients apply poll:closed only when u matches the poll author.
+      fanOutExceptSender(sender.userId, resolved.conversation, (room) => {
+        io.to(room).emit(EVENTS.SERVER.POLL_CLOSED, {
+          pollId: valResult.data.pollId,
+          u: sender.username,
+          ...scopeOf(resolved.conversation),
         });
       });
     });

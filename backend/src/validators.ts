@@ -141,6 +141,23 @@ const messageDeletePayloadSchema = z
   })
   .refine(exactlyOneTarget, { message: exactlyOneTargetMessage });
 
+// Poll definitions live inside the ciphertext, so only the pollId (the id of
+// the message carrying the poll) and the chosen option index cross the wire.
+const pollVotePayloadSchema = z
+  .strictObject({
+    ...conversationTargetFields,
+    pollId: uuidSchema,
+    option: z.number().int().min(0).max(9),
+  })
+  .refine(exactlyOneTarget, { message: exactlyOneTargetMessage });
+
+const pollClosePayloadSchema = z
+  .strictObject({
+    ...conversationTargetFields,
+    pollId: uuidSchema,
+  })
+  .refine(exactlyOneTarget, { message: exactlyOneTargetMessage });
+
 const displayNameSchema = z
   .string()
   .transform((value) => value.trim())
@@ -278,6 +295,18 @@ export function validateMessageDeletePayload(
   input: unknown,
 ): ValidationResult<z.infer<typeof messageDeletePayloadSchema>> {
   return toValidationResult(messageDeletePayloadSchema, input);
+}
+
+export function validatePollVotePayload(
+  input: unknown,
+): ValidationResult<z.infer<typeof pollVotePayloadSchema>> {
+  return toValidationResult(pollVotePayloadSchema, input);
+}
+
+export function validatePollClosePayload(
+  input: unknown,
+): ValidationResult<z.infer<typeof pollClosePayloadSchema>> {
+  return toValidationResult(pollClosePayloadSchema, input);
 }
 
 export function validateProfileUpdatePayload(

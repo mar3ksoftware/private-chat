@@ -213,6 +213,19 @@ export type MessageDeletePayload = {
   readonly targetId: string;
 };
 
+export type PollVotePayload = {
+  readonly pollId: string;
+  readonly option: number;
+  readonly to?: string;
+  readonly groupId?: string;
+};
+
+export type PollClosePayload = {
+  readonly pollId: string;
+  readonly to?: string;
+  readonly groupId?: string;
+};
+
 export type ProfileUpdatePayload = {
   readonly displayName: string;
   readonly status: string;
@@ -267,6 +280,23 @@ export type ProfileUpdatedPayload = {
   readonly username: string;
   readonly displayName: string;
   readonly status: string;
+};
+
+// Same fields as the send payload plus the acting username, mirroring how
+// message:reacted carries the reactor.
+export type PollVotedPayload = {
+  readonly pollId: string;
+  readonly option: number;
+  readonly u: string;
+  readonly to?: string;
+  readonly groupId?: string;
+};
+
+export type PollClosedPayload = {
+  readonly pollId: string;
+  readonly u: string;
+  readonly to?: string;
+  readonly groupId?: string;
 };
 
 // ── Discriminated unions ──────────────────────────────────────────────
@@ -354,6 +384,8 @@ export const EVENTS = {
     MESSAGE_REACT: 'message:react',
     MESSAGE_EDIT: 'message:edit',
     MESSAGE_DELETE: 'message:delete',
+    POLL_VOTE: 'poll:vote',
+    POLL_CLOSE: 'poll:close',
     PROFILE_UPDATE: 'profile:update',
     E2EE_PUBLIC_KEY: 'e2ee:public_key',
     USER_REGISTER: 'user:register',
@@ -376,6 +408,8 @@ export const EVENTS = {
     MESSAGE_REACTED: 'message:reacted',
     MESSAGE_EDITED: 'message:edited',
     MESSAGE_DELETED: 'message:deleted',
+    POLL_VOTED: 'poll:voted',
+    POLL_CLOSED: 'poll:closed',
     PROFILE_UPDATED: 'profile:updated',
     ACTIVE_USERS: 'active_users',
     ACTIVE_GROUPS: 'active_groups',
@@ -432,6 +466,8 @@ export type ServerToClientEvents = {
   readonly [EVENTS.SERVER.MESSAGE_REACTED]: (payload: MessageReactedPayload) => void;
   readonly [EVENTS.SERVER.MESSAGE_EDITED]: (payload: MessageEditedPayload) => void;
   readonly [EVENTS.SERVER.MESSAGE_DELETED]: (payload: MessageDeletedPayload) => void;
+  readonly [EVENTS.SERVER.POLL_VOTED]: (payload: PollVotedPayload) => void;
+  readonly [EVENTS.SERVER.POLL_CLOSED]: (payload: PollClosedPayload) => void;
   readonly [EVENTS.SERVER.PROFILE_UPDATED]: (payload: ProfileUpdatedPayload) => void;
 };
 
@@ -454,6 +490,8 @@ export type ClientToServerEvents = {
   readonly [EVENTS.CLIENT.MESSAGE_REACT]: (payload: MessageReactPayload) => void;
   readonly [EVENTS.CLIENT.MESSAGE_EDIT]: (payload: MessageEditPayload) => void;
   readonly [EVENTS.CLIENT.MESSAGE_DELETE]: (payload: MessageDeletePayload) => void;
+  readonly [EVENTS.CLIENT.POLL_VOTE]: (payload: PollVotePayload) => void;
+  readonly [EVENTS.CLIENT.POLL_CLOSE]: (payload: PollClosePayload) => void;
   readonly [EVENTS.CLIENT.PROFILE_UPDATE]: (payload: ProfileUpdatePayload) => void;
 };
 
