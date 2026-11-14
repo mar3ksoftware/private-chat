@@ -6,6 +6,7 @@ import '../theme/app_theme.dart';
 import '../widgets/connection_status.dart';
 import '../widgets/create_group_sheet.dart';
 import '../widgets/empty_state.dart';
+import '../widgets/profile_editor_sheet.dart';
 
 /// The master list: connection header, Users/Groups tabs, the roster and
 /// the identity footer. Used full-screen on phones and as the left pane in
@@ -99,6 +100,18 @@ class _ConversationListState extends State<ConversationList> {
             ),
           ),
           ConnectionBadge(status: status),
+          IconButton(
+            // Profile editor entry point (C9): app bar settings affordance.
+            icon: const Icon(
+              Icons.manage_accounts_outlined,
+              size: 22,
+              color: AppColors.textSecondary,
+            ),
+            onPressed: () => showProfileEditorSheet(
+              context,
+              controller: widget.controller,
+            ),
+          ),
         ],
       ),
     );
@@ -160,17 +173,32 @@ class _ConversationListState extends State<ConversationList> {
                   padding: const EdgeInsets.fromLTRB(10, 2, 10, 10),
                   children: [
                     for (final user in users)
-                      _RosterRow(
-                        key: ValueKey(user.userId),
-                        selected: selectedPeer == user.username,
-                        onTap: () => widget.onSelectPeer(user.username),
-                        leading: const _PresenceDot(),
-                        title: user.username,
-                      ),
+                      _buildUserRow(user, selectedPeer: selectedPeer),
                   ],
                 ),
         ),
       ],
+    );
+  }
+
+  /// One roster row: display name title (username subtitle when they differ)
+  /// plus the C7 unread badge / mention accent.
+  Widget _buildUserRow(
+    UserInfo user, {
+    required String? selectedPeer,
+  }) {
+    final controller = widget.controller;
+    final target = ConversationTarget.dm(user.username);
+    final displayName = controller.displayNameOf(user.username);
+    return _RosterRow(
+      key: ValueKey(user.userId),
+      selected: selectedPeer == user.username,
+      onTap: () => widget.onSelectPeer(user.username),
+      leading: const _PresenceDot(),
+      title: displayName,
+      subtitle: displayName == user.username ? null : user.username,
+      badge: controller.unreadBadgeFor(target),
+      mention: controller.hasMentionFor(target),
     );
   }
 
@@ -221,20 +249,31 @@ class _ConversationListState extends State<ConversationList> {
                   padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
                   children: [
                     for (final group in groups)
-                      _RosterRow(
-                        key: ValueKey(group.groupId),
-                        selected: selectedGroup == group.groupId,
-                        onTap: () => widget.onSelectGroup(group.groupId),
-                        leading: const _HashBadge(),
-                        title: group.name,
-                        subtitle: group.members.length == 1
-                            ? '1 member'
-                            : '${group.members.length} members',
-                      ),
+                      _buildGroupRow(group, selectedGroup: selectedGroup),
                   ],
                 ),
         ),
       ],
+    );
+  }
+
+  Widget _buildGroupRow(
+    GroupInfo group, {
+    required String? selectedGroup,
+  }) {
+    final controller = widget.controller;
+    final target = ConversationTarget.group(group.groupId);
+    return _RosterRow(
+      key: ValueKey(group.groupId),
+      selected: selectedGroup == group.groupId,
+      onTap: () => widget.onSelectGroup(group.groupId),
+      leading: const _HashBadge(),
+      title: group.name,
+      subtitle: group.members.length == 1
+          ? '1 member'
+          : '${group.members.length} members',
+      badge: controller.unreadBadgeFor(target),
+      mention: controller.hasMentionFor(target),
     );
   }
 
@@ -407,6 +446,8 @@ class _RosterRow extends StatelessWidget {
     required this.leading,
     required this.title,
     this.subtitle,
+    this.badge,
+    this.mention = false,
   });
 
   final bool selected;
@@ -414,6 +455,13 @@ class _RosterRow extends StatelessWidget {
   final Widget leading;
   final String title;
   final String? subtitle;
+
+  /// Unread badge label (`99+` cap applied upstream) — null hides it (C7).
+  final String? badge;
+
+  /// True when the unread set contains a mention of us — the badge then
+  /// takes the accent color (C7/C8).
+  final bool mention;
 
   @override
   Widget build(BuildContext context) {
@@ -466,6 +514,30 @@ class _RosterRow extends StatelessWidget {
                     ],
                   ),
                 ),
+                if (badge != null)
+                  Container(
+                    key: const Key('unread-badge'),
+                    margin: const EdgeInsets.only(left: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: mention ? AppColors.accentDeep : AppColors.surfaceAlt,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Text(
+                      badge!,
+                      key: const Key('unread-badge-label'),
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: mention
+                            ? Colors.white
+                            : AppColors.textSecondary,
+                      ),
+                    ),
+                  ),
                 if (selected)
                   const Icon(
                     Icons.check_rounded,

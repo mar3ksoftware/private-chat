@@ -23,12 +23,32 @@ class ChatShell extends StatefulWidget {
   State<ChatShell> createState() => _ChatShellState();
 }
 
-class _ChatShellState extends State<ChatShell> {
+class _ChatShellState extends State<ChatShell> with WidgetsBindingObserver {
   bool _isWide = false;
   bool _layoutPrimed = false;
   bool _chatPushed = false;
 
   ChatController get _controller => widget.controller;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // The controller starts focused; only lifecycle transitions flow here.
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // C7/C1: backgrounding counts incoming messages as unread and ends the
+    // typing burst; resuming clears the open conversation and re-receipts.
+    _controller.setAppFocused(state == AppLifecycleState.resumed);
+  }
 
   bool get _hasSelection =>
       _controller.selectedPeer != null || _controller.selectedGroup != null;

@@ -15,14 +15,20 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
+import '../crypto/e2ee.dart';
 import '../crypto/e2ee_session.dart';
 import '../crypto/media_crypto.dart';
 import '../models/models.dart';
 import '../net/media_client.dart';
 import '../net/socket_service.dart';
+import '../utils/envelope.dart';
+import '../utils/mentions.dart';
+import '../utils/profile.dart';
+import '../utils/uuid.dart';
 
 /// Connection lifecycle as observed by the UI.
 enum ConnectionStatus { connecting, connected, disconnected }
@@ -60,6 +66,22 @@ class _Entry<T> {
   final String key;
   final T value;
 }
+
+/// An optimistic tier-1 operation awaiting a possible `message_rejected`;
+/// the rejection carries no correlation id, so rollbacks are matched
+/// newest-first within a short window (mirrors `PendingOp` on the web).
+class _PendingOp {
+  const _PendingOp(this.at, this.undo);
+
+  final int at;
+  final void Function() undo;
+}
+
+const int _pendingOpTtlMs = 5000;
+
+/// A no-op placeholder op: unrelated emits (plain sends, typing, receipts)
+/// register one so their own rejection pops this instead of a real rollback.
+void _noopOp() {}
 
 /// A received private message waiting for its shared key to arrive.
 class _PendingPrivate {
@@ -109,6 +131,8 @@ class ChatController extends ChangeNotifier {
     this._serverUrl,
     this._errorClearDelay = const Duration(seconds: 5),
     this._sharedKeyTimeoutMs = 3000,
+    this.typingRepeatDelay = const Duration(milliseconds: 4000),
+    this.typingHideDelay = const Duration(milliseconds: 6000),
   }) : _e2ee = e2ee ?? E2eeSession() {
     _listen();
     _socket.connect();
@@ -145,6 +169,21 @@ class ChatController extends ChangeNotifier {
 
   final Duration _errorClearDelay;
   final int _sharedKeyTimeoutMs;
+
+  /// Outgoing typing cadence: re-emit `typing:send` at this interval while a
+  /// burst is live (web `TYPING_REPEAT_MS`).
+  final Duration typingRepeatDelay;
+
+  /// Receiver-side auto-hide: an incoming indicator disappears after this
+  /// even if `active:false` never arrives (web `TYPING_HIDE_MS`).
+  final Duration typingHideDelay;
+
+  /// Default typing hide window, in milliseconds (spec C1: 6 s).
+  static const int typingHideMs = 6000;
+
+  /// Default typing repeat cadence, in milliseconds (spec C1: 4 s).
+  static const int typingRepeatMs = 4000;
+
   final List<Unsubscribe> _subscriptions = <Unsubscribe>[];
   Timer? _errorTimer;
   bool _disposed = false;
@@ -176,6 +215,48 @@ class ChatController extends ChangeNotifier {
       <String, List<_Entry<DecryptedGroupMessage>>>{};
   final Map<String, _PendingPrivate> _pendingPrivate = <String, _PendingPrivate>{};
   final Map<String, _PendingGroup> _pendingGroup = <String, _PendingGroup>{};
+
+  // ── Tier-1 state ──────────────────────────────────────────────────────
+
+  /// Per-conversation unread counters (C7), keyed `dm:{username}` /
+  /// `group:{groupId}`. Client-side only — never persisted.
+  final Map<String, UnreadEntry> _unread = <String, UnreadEntry>{};
+
+  /// Wire dedupe keys that already incremented unread; a deferred
+  /// decryption may reveal a mention afterwards without double-counting.
+  final Set<String> _unreadCounted = <String>{};
+
+  /// Reactions per target message id → emoji → usernames (C5).
+  final Map<String, Map<String, Set<String>>> _reactions =
+      <String, Map<String, Set<String>>>{};
+
+  /// DM peer → highest `receipt:read` upTo received from them (C2).
+  final Map<String, int> _readUpTo = <String, int>{};
+
+  /// Conversation typing keys → expiry of the last active flag (C1).
+  final Map<String, int> _typing = <String, int>{};
+
+  /// Known profiles keyed by username (C9).
+  final Map<String, ProfileEntry> _profiles = <String, ProfileEntry>{};
+
+  /// Outgoing typing burst: the live conversation and its repeat timer.
+  ConversationTarget? _typingTarget;
+  bool _typingBurstActive = false;
+  Timer? _typingRepeatTimer;
+
+  /// Receiver-side auto-hide timers, keyed like [_typing].
+  final Map<String, Timer> _typingHideTimers = <String, Timer>{};
+
+  /// Highest `receipt:read` upTo already sent per peer — keeps repeats off
+  /// the shared rate-limit bucket (C2).
+  final Map<String, int> _lastSentReceipt = <String, int>{};
+
+  /// Optimistic react/edit/delete/profile ops awaiting a possible
+  /// `message_rejected`; rollbacks are matched newest-first within the TTL.
+  final List<_PendingOp> _pendingOps = <_PendingOp>[];
+
+  /// Whether the app currently has focus (C7's background rule).
+  bool _appFocused = true;
 
   // ── Getters ────────────────────────────────────────────────────────────
 
@@ -235,6 +316,76 @@ class ChatController extends ChangeNotifier {
     return List<DecryptedGroupMessage>.unmodifiable(entries.map((entry) => entry.value));
   }
 
+  // ── Tier-1 getters ────────────────────────────────────────────────────
+
+  /// Unread state per conversation key (`dm:{username}` / `group:{groupId}`).
+  Map<String, UnreadEntry> get unread => Map<String, UnreadEntry>.unmodifiable(_unread);
+
+  /// Whether the app currently has focus (mirror of the web
+  /// `document.hasFocus() && visibilityState === 'visible'`).
+  bool get appFocused => _appFocused;
+
+  /// The unread badge label for [target], or null when nothing is unread.
+  /// Counts above 99 collapse to `99+` (spec D).
+  String? unreadBadgeFor(ConversationTarget target) {
+    final count = _unread[_unreadKey(target)]?.count ?? 0;
+    if (count == 0) return null;
+    return count > 99 ? '99+' : '$count';
+  }
+
+  /// Unread entry for [target] (zeroed when never seen).
+  UnreadEntry unreadFor(ConversationTarget target) =>
+      _unread[_unreadKey(target)] ?? const UnreadEntry();
+
+  /// Whether [target] holds an unread mention of the current user (C7).
+  bool hasMentionFor(ConversationTarget target) =>
+      _unread[_unreadKey(target)]?.mention == true;
+
+  /// Highest `receipt:read` upTo received from DM [peer] (C2).
+  int readUpToFor(String peer) => _readUpTo[peer] ?? 0;
+
+  /// Known profile for [username], when the server has sent one.
+  ProfileEntry? profileFor(String username) => _profiles[username];
+
+  /// Display name for [username] with the username as fallback (C9).
+  String displayNameOf(String username) {
+    final display = _profiles[username]?.displayName;
+    return (display == null || display.isEmpty) ? username : display;
+  }
+
+  /// Status text for [username]; '' when unset (C9).
+  String statusOf(String username) => _profiles[username]?.status ?? '';
+
+  /// Usernames currently typing in the DM [peer] or group [groupId], in
+  /// roster order; our own name is never included (C1).
+  List<String> typingUsernamesIn({String? peer, String? groupId}) {
+    final id = groupId;
+    if (id != null) {
+      final groupIndex = _groups.indexWhere((g) => g.groupId == id);
+      if (groupIndex == -1) return const <String>[];
+      final myUsername = _me?.username;
+      return <String>[
+        for (final member in _groups[groupIndex].members)
+          if (member.username != myUsername &&
+              _typing.containsKey('group:$id:${member.username}'))
+            member.username,
+      ];
+    }
+    final username = peer;
+    if (username == null) return const <String>[];
+    return _typing.containsKey('dm:$username') ? <String>[username] : const <String>[];
+  }
+
+  /// Reactions on message [targetId]: emoji → usernames (C5).
+  Map<String, Set<String>> reactionsFor(String targetId) {
+    final agg = _reactions[targetId];
+    if (agg == null) return const <String, Set<String>>{};
+    return Map<String, Set<String>>.unmodifiable(agg);
+  }
+
+  static String _unreadKey(ConversationTarget target) =>
+      target.isGroup ? 'group:${target.groupId}' : 'dm:${target.username}';
+
   // ── Connection ─────────────────────────────────────────────────────────
 
   /// Opens the socket. Called once at startup; reconnects are automatic.
@@ -289,6 +440,8 @@ class ChatController extends ChangeNotifier {
     _pendingGuest = null;
     _errorTimer?.cancel();
     _errorTimer = null;
+    _stopTypingBurst();
+    _clearTypingIndicators();
     _socket.disconnect();
     _e2ee = E2eeSession();
     _users.clear();
@@ -299,6 +452,14 @@ class ChatController extends ChangeNotifier {
     _groupByGroup.clear();
     _pendingPrivate.clear();
     _pendingGroup.clear();
+    _unread.clear();
+    _unreadCounted.clear();
+    _reactions.clear();
+    _readUpTo.clear();
+    _typing.clear();
+    _profiles.clear();
+    _lastSentReceipt.clear();
+    _pendingOps.clear();
     _mediaToken = null;
     _mediaByFileId.clear();
     _mediaInFlight.clear();
@@ -316,17 +477,24 @@ class ChatController extends ChangeNotifier {
   // ── Conversations ──────────────────────────────────────────────────────
 
   /// Selects the private conversation with [username] and clears the group
-  /// selection (the UI shows one active conversation at a time).
+  /// selection (the UI shows one active conversation at a time). Opening
+  /// clears the conversation's unread counter and — while the app is
+  /// focused — sends the read receipt (C7/C2).
   void selectPeer(String username) {
     _selectedPeer = username;
     _selectedGroup = null;
+    _clearUnread('dm:$username');
+    final upTo = _computeUpTo(username);
+    if (upTo != null && _appFocused) sendReadReceipt(username, upTo);
     _notify();
   }
 
-  /// Selects the group conversation [groupId] and clears the peer selection.
+  /// Selects the group conversation [groupId] and clears the peer
+  /// selection; opening clears the group's unread counter (C7).
   void selectGroup(String groupId) {
     _selectedGroup = groupId;
     _selectedPeer = null;
+    _clearUnread('group:$groupId');
     _notify();
   }
 
@@ -363,11 +531,21 @@ class ChatController extends ChangeNotifier {
     );
   }
 
-  /// Encrypts [plaintext] for [toUsername] and emits `message:send`.
+  /// Encrypts a text [body] for [toUsername] inside the canonical v2
+  /// envelope (spec C3: always wrapped, reply ref included when set) and
+  /// emits `message:send` with a fresh client UUID.
   ///
   /// Waits briefly for the shared key exchange to complete; returns false and
   /// surfaces a friendly error when it does not.
-  Future<bool> sendMessage(String toUsername, String plaintext) async {
+  Future<bool> sendMessage(
+    String toUsername,
+    String body, {
+    Map<String, dynamic>? reply,
+  }) => _sendEncrypted(toUsername, wrapTextEnvelope(body, reply));
+
+  /// Low-level `message:send` for an already-wrapped plaintext (media
+  /// descriptors stay unwrapped — the parser branches on `t` first).
+  Future<bool> _sendEncrypted(String toUsername, String plaintext) async {
     final me = _me;
     if (me == null || toUsername == me.username) return false;
     try {
@@ -380,8 +558,10 @@ class ChatController extends ChangeNotifier {
         return false;
       }
       final payload = await _e2ee.encrypt(toUsername, plaintext);
+      _enqueueOp(_noopOp);
       _socket.sendMessageSend(
         EncryptedMessagePayload(
+          id: generateUuidV4(),
           to: toUsername,
           ciphertext: payload.ciphertext,
           iv: payload.iv,
@@ -394,12 +574,20 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  /// Text counterpart of [sendMessage]: wraps [body] (with the optional
+  /// reply ref) then encrypts per member and emits `group:message:send`.
+  Future<bool> sendGroupMessage(
+    String groupId,
+    String body, {
+    Map<String, dynamic>? reply,
+  }) => _sendGroupEncrypted(groupId, wrapTextEnvelope(body, reply));
+
   /// Encrypts [plaintext] for every group member we share a key with and
   /// emits `group:message:send`.
   ///
   /// Our own copy is always included (via the self key) so our echoed message
   /// decrypts locally, mirroring the web client.
-  Future<bool> sendGroupMessage(String groupId, String plaintext) async {
+  Future<bool> _sendGroupEncrypted(String groupId, String plaintext) async {
     final me = _me;
     final groupIndex = _groups.indexWhere((g) => g.groupId == groupId);
     if (me == null || groupIndex == -1) return false;
@@ -434,8 +622,13 @@ class ChatController extends ChangeNotifier {
         return false;
       }
 
+      _enqueueOp(_noopOp);
       _socket.sendGroupMessage(
-        GroupEncryptedPayload(groupId: groupId, ciphertexts: ciphertexts),
+        GroupEncryptedPayload(
+          id: generateUuidV4(),
+          groupId: groupId,
+          ciphertexts: ciphertexts,
+        ),
       );
       return true;
     } catch (_) {
@@ -463,7 +656,7 @@ class ChatController extends ChangeNotifier {
   }
 
   /// Prepares and uploads a private attachment, then sends the descriptor
-  /// envelope through the existing [sendMessage] path (contract order:
+  /// envelope through the low-level send path (contract order:
   /// validate → strip → size → encrypt → upload → envelope → send).
   Future<bool> sendMediaMessage(
     String toUsername,
@@ -475,12 +668,12 @@ class ChatController extends ChangeNotifier {
       bytes: bytes,
       mime: mime,
       name: name,
-      send: (envelope) => sendMessage(toUsername, envelope),
+      send: (envelope) => _sendEncrypted(toUsername, envelope),
     );
   }
 
   /// Group counterpart of [sendMediaMessage]; the envelope is encrypted per
-  /// member by [sendGroupMessage] and the file is uploaded exactly once.
+  /// member by the group send path and the file is uploaded exactly once.
   Future<bool> sendGroupMediaMessage(
     String groupId,
     Uint8List bytes, {
@@ -491,7 +684,7 @@ class ChatController extends ChangeNotifier {
       bytes: bytes,
       mime: mime,
       name: name,
-      send: (envelope) => sendGroupMessage(groupId, envelope),
+      send: (envelope) => _sendGroupEncrypted(groupId, envelope),
     );
   }
 
@@ -667,6 +860,636 @@ class ChatController extends ChangeNotifier {
     return failure;
   }
 
+  // ── Typing (C1) ────────────────────────────────────────────────────────
+
+  /// Starts (or keeps alive) the outgoing typing burst for [target]. While
+  /// the burst is live the timer re-emits every [typingRepeatDelay]; a
+  /// repeat call for the same conversation is throttled to that cadence.
+  void sendTyping(ConversationTarget target) {
+    if (_typingBurstActive && _typingTarget == target) return;
+    if (_typingBurstActive) {
+      // Conversation switched mid-burst: clear the previous indicator first.
+      _stopTypingBurst();
+    }
+    _typingTarget = target;
+    _typingBurstActive = true;
+    _emitTyping(target, active: true);
+    _typingRepeatTimer = Timer.periodic(typingRepeatDelay, (_) {
+      final live = _typingTarget;
+      if (!_typingBurstActive || live == null) return;
+      _emitTyping(live, active: true);
+    });
+  }
+
+  /// Ends the outgoing burst with an `active:false` (C1).
+  void stopTyping() => _stopTypingBurst();
+
+  void _stopTypingBurst() {
+    _typingRepeatTimer?.cancel();
+    _typingRepeatTimer = null;
+    final target = _typingTarget;
+    if (_typingBurstActive && target != null) _emitTyping(target, active: false);
+    _typingBurstActive = false;
+    _typingTarget = null;
+  }
+
+  void _emitTyping(ConversationTarget target, {required bool active}) {
+    if (!_socket.isConnected) return;
+    _enqueueOp(_noopOp);
+    _socket.sendTypingSend(
+      TypingSendPayload(
+        to: target.isDm ? target.username : null,
+        groupId: target.isGroup ? target.groupId : null,
+        active: active,
+      ),
+    );
+  }
+
+  void _handleTypingChanged(TypingChangedPayload payload) {
+    final key = payload.groupId != null
+        ? 'group:${payload.groupId}:${payload.fromUsername}'
+        : 'dm:${payload.fromUsername}';
+
+    _typingHideTimers[key]?.cancel();
+    _typingHideTimers.remove(key);
+
+    if (!payload.active) {
+      if (_typing.remove(key) != null) _notify();
+      return;
+    }
+    _typing[key] = DateTime.now().millisecondsSinceEpoch + typingHideMs;
+    // Auto-hide even when `active:false` is lost (spec C1: 6 s).
+    _typingHideTimers[key] = Timer(typingHideDelay, () {
+      _typingHideTimers.remove(key);
+      if (_typing.remove(key) != null) _notify();
+    });
+    _notify();
+  }
+
+  /// Drops every incoming indicator and its timer (disconnect/logout).
+  void _clearTypingIndicators() {
+    for (final timer in _typingHideTimers.values) {
+      timer.cancel();
+    }
+    _typingHideTimers.clear();
+    _typing.clear();
+  }
+
+  // ── Read receipts (C2) ────────────────────────────────────────────────
+
+  /// Emits `receipt:read` for [peer] when [upTo] advances past the last
+  /// receipt we sent (repeats are dropped to spare the rate-limit bucket).
+  void sendReadReceipt(String peer, int upTo) {
+    if (!_socket.isConnected) return;
+    final last = _lastSentReceipt[peer];
+    if (last != null && upTo <= last) return;
+    _lastSentReceipt[peer] = upTo;
+    _enqueueOp(_noopOp);
+    _socket.sendReceiptRead(ReceiptReadPayload(to: peer, upTo: upTo));
+  }
+
+  /// Highest timestamp among the DM messages [peer] sent us — the `upTo`
+  /// bound for our outgoing receipt.
+  int? _computeUpTo(String peer) {
+    final entries = _privateByPeer[peer];
+    if (entries == null) return null;
+    int? max;
+    for (final entry in entries) {
+      final message = entry.value;
+      if (message.isOwn || message.fromUsername != peer) continue;
+      if (max == null || message.timestamp > max) max = message.timestamp;
+    }
+    return max;
+  }
+
+  void _handleReceiptRead(ReceiptReadRelay payload) {
+    final previous = _readUpTo[payload.fromUsername] ?? 0;
+    if (payload.upTo <= previous) return;
+    _readUpTo[payload.fromUsername] = payload.upTo;
+    _notify();
+  }
+
+  // ── App focus (C7) ────────────────────────────────────────────────────
+
+  /// Reports the app's focus state. Gaining focus clears the open
+  /// conversation's unread counter and re-sends its DM receipt; losing it
+  /// makes incoming messages count as unread even while open — and ends the
+  /// outgoing typing burst (C1).
+  void setAppFocused(bool focused) {
+    if (_appFocused == focused) return;
+    _appFocused = focused;
+    if (!focused) {
+      _stopTypingBurst();
+      return;
+    }
+    final peer = _selectedPeer;
+    final group = _selectedGroup;
+    if (peer != null) {
+      _clearUnread('dm:$peer');
+      final upTo = _computeUpTo(peer);
+      if (upTo != null) sendReadReceipt(peer, upTo);
+    } else if (group != null) {
+      _clearUnread('group:$group');
+    }
+    _notify();
+  }
+
+  void _clearUnread(String key) {
+    final previous = _unread[key];
+    if (previous == null || (previous.count == 0 && !previous.mention)) return;
+    _unread[key] = const UnreadEntry();
+  }
+
+  /// Applies the C7 unread rules for one incoming message. The wire note
+  /// runs before decryption (mention unknown yet); a later note with the
+  /// decrypted body patches the mention flag without double-counting.
+  void _noteIncoming({
+    required String key,
+    required String dedupe,
+    required bool isOpen,
+    required bool mention,
+  }) {
+    final alreadyCounted = _unreadCounted.contains(dedupe);
+    if (mention && alreadyCounted) {
+      final entry = _unread[key];
+      if (entry != null && !entry.mention) {
+        _unread[key] = entry.copyWith(mention: true);
+        _notify();
+      }
+      return;
+    }
+    // A mention of me always counts — even when the conversation is open.
+    if (!(mention || !isOpen || !_appFocused)) return;
+    if (alreadyCounted) return;
+    _unreadCounted.add(dedupe);
+    final previous = _unread[key] ?? const UnreadEntry();
+    _unread[key] = UnreadEntry(
+      count: previous.count + 1,
+      mention: previous.mention || mention,
+    );
+    _notify();
+  }
+
+  bool _mentionsMeIn(
+    String? body, {
+    required bool decryptionFailed,
+    required bool allowAll,
+  }) {
+    final me = _me;
+    if (body == null || decryptionFailed || me == null) return false;
+    return mentionsMe(body, _knownUsernames(), me.username, allowAll);
+  }
+
+  /// Directory snapshot + roster + self, the mention candidate set (C8).
+  List<String> _knownUsernames() => <String>{
+    ..._directory,
+    for (final user in _users) user.username,
+    if (_me != null) _me!.username,
+  }.toList();
+
+  void _noteIncomingPrivate(
+    PrivateMessage wire, {
+    String? body,
+    bool decryptionFailed = false,
+    required bool isOwn,
+  }) {
+    if (isOwn) return;
+    final isOpen = _selectedPeer == wire.fromUsername;
+    _noteIncoming(
+      key: 'dm:${wire.fromUsername}',
+      dedupe: wire.dedupeKey,
+      isOpen: isOpen,
+      mention: _mentionsMeIn(body, decryptionFailed: decryptionFailed, allowAll: false),
+    );
+    if (isOpen && _appFocused) {
+      final upTo = _computeUpTo(wire.fromUsername);
+      sendReadReceipt(wire.fromUsername, math.max(upTo ?? 0, wire.timestamp));
+    }
+  }
+
+  void _noteIncomingGroup(
+    GroupMessage wire, {
+    String? body,
+    bool decryptionFailed = false,
+    required bool isOwn,
+  }) {
+    if (isOwn) return;
+    _noteIncoming(
+      key: 'group:${wire.groupId}',
+      dedupe: wire.dedupeKey,
+      isOpen: _selectedGroup == wire.groupId,
+      mention: _mentionsMeIn(body, decryptionFailed: decryptionFailed, allowAll: true),
+    );
+  }
+
+  // ── Reactions (C5) ─────────────────────────────────────────────────────
+
+  /// Optimistically toggles our reaction on [targetId] and emits
+  /// `message:react`; a `message_rejected` rolls the local state back.
+  void toggleReaction(ConversationTarget target, String targetId, String emoji) {
+    final me = _me;
+    if (me == null) return;
+    final current = _reactions[targetId]?[emoji] ?? const <String>{};
+    final active = !current.contains(me.username);
+    _enqueueOp(() => _setReaction(targetId, emoji, me.username, !active));
+    _setReaction(targetId, emoji, me.username, active);
+    _socket.sendReact(
+      MessageReactPayload(
+        to: target.isDm ? target.username : null,
+        groupId: target.isGroup ? target.groupId : null,
+        targetId: targetId,
+        emoji: emoji,
+        active: active,
+      ),
+    );
+  }
+
+  void _handleMessageReacted(MessageReactedPayload payload) {
+    _setReaction(payload.targetId, payload.emoji, payload.fromUsername, payload.active);
+  }
+
+  /// Aggregates one reaction change: emoji → set of usernames.
+  void _setReaction(String targetId, String emoji, String username, bool active) {
+    final existing = _reactions[targetId] ?? const <String, Set<String>>{};
+    final merged = <String, Set<String>>{
+      for (final entry in existing.entries)
+        entry.key: Set<String>.of(entry.value),
+    };
+    final reactors = merged.putIfAbsent(emoji, () => <String>{});
+    if (active) {
+      reactors.add(username);
+    } else {
+      reactors.remove(username);
+    }
+    if (reactors.isEmpty) merged.remove(emoji);
+    _reactions[targetId] = merged;
+    _notify();
+  }
+
+  // ── Edit / delete (C6) ────────────────────────────────────────────────
+
+  DecryptedMessage? _privateById(String id) {
+    if (id.isEmpty) return null;
+    for (final bucket in _privateByPeer.values) {
+      for (final entry in bucket) {
+        if (entry.value.id == id) return entry.value;
+      }
+    }
+    return null;
+  }
+
+  DecryptedGroupMessage? _groupById(String id) {
+    if (id.isEmpty) return null;
+    for (final bucket in _groupByGroup.values) {
+      for (final entry in bucket) {
+        if (entry.value.id == id) return entry.value;
+      }
+    }
+    return null;
+  }
+
+  /// Re-encrypts [body] and emits `message:edit` for an own text message.
+  /// The new body applies optimistically; `message_rejected` restores the
+  /// original content. Media, tombstones and foreign messages are refused.
+  Future<bool> editMessage(
+    ConversationTarget target,
+    String targetId,
+    String body, {
+    Map<String, dynamic>? reply,
+  }) async {
+    String? originalBody;
+    Map<String, dynamic>? originalReply;
+    bool originalEdited;
+    if (target.isGroup) {
+      final original = _groupById(targetId);
+      if (original == null ||
+          !original.isOwn ||
+          original.media != null ||
+          original.deleted) {
+        return false;
+      }
+      originalBody = original.body;
+      originalReply = original.reply;
+      originalEdited = original.edited;
+    } else {
+      final original = _privateById(targetId);
+      if (original == null ||
+          !original.isOwn ||
+          original.media != null ||
+          original.deleted) {
+        return false;
+      }
+      originalBody = original.body;
+      originalReply = original.reply;
+      originalEdited = original.edited;
+    }
+
+    final appliedReply = reply ?? originalReply;
+    void rollback() {
+      _applyEdit(
+        targetId,
+        body: originalBody ?? '',
+        reply: originalReply,
+        edited: originalEdited,
+      );
+    }
+
+    try {
+      final envelope = wrapTextEnvelope(body, appliedReply);
+
+      if (target.isDm) {
+        final peer = target.username!;
+        final ready = await _e2ee.waitForSharedKey(
+          peer,
+          timeoutMs: _sharedKeyTimeoutMs,
+        );
+        if (!ready) {
+          _showError('Secure session not ready. Please try again.');
+          return false;
+        }
+        final payload = await _e2ee.encrypt(peer, envelope);
+        _enqueueOp(rollback);
+        _applyEdit(targetId, body: body, reply: appliedReply, edited: true);
+        _socket.sendEdit(
+          MessageEditPayload(
+            to: peer,
+            targetId: targetId,
+            ciphertext: payload.ciphertext,
+            iv: payload.iv,
+          ),
+        );
+        return true;
+      }
+
+      final groupId = target.groupId!;
+      final me = _me;
+      final groupIndex = _groups.indexWhere((g) => g.groupId == groupId);
+      if (me == null || groupIndex == -1) return false;
+      final recipients = <String>[
+        for (final member in _groups[groupIndex].members)
+          if (member.username != me.username && _e2ee.hasSharedKey(member.username))
+            member.username,
+      ];
+      if (recipients.isEmpty) {
+        _showError('Secure session not ready. Please try again.');
+        return false;
+      }
+
+      // One ciphertext decrypts with exactly one pairwise key, so each
+      // member gets their own copy — the same scheme a group send uses.
+      final copies = <EncryptedPayload>[];
+      for (final member in recipients) {
+        copies.add(await _e2ee.encrypt(member, envelope));
+      }
+      _enqueueOp(rollback);
+      for (var i = 1; i < copies.length; i++) {
+        _enqueueOp(_noopOp);
+      }
+      _applyEdit(targetId, body: body, reply: appliedReply, edited: true);
+      for (final copy in copies) {
+        _socket.sendEdit(
+          MessageEditPayload(
+            groupId: groupId,
+            targetId: targetId,
+            ciphertext: copy.ciphertext,
+            iv: copy.iv,
+          ),
+        );
+      }
+      return true;
+    } catch (_) {
+      _showError('Failed to send message. Please try again.');
+      return false;
+    }
+  }
+
+  /// Emits `message:delete` for an own message and tombstones it locally
+  /// (C6); `message_rejected` restores the original content.
+  void deleteMessage(ConversationTarget target, String targetId) {
+    String? originalBody;
+    Map<String, dynamic>? originalReply;
+    bool originalEdited;
+    if (target.isGroup) {
+      final original = _groupById(targetId);
+      if (original == null || !original.isOwn || original.deleted) return;
+      originalBody = original.body;
+      originalReply = original.reply;
+      originalEdited = original.edited;
+    } else {
+      final original = _privateById(targetId);
+      if (original == null || !original.isOwn || original.deleted) return;
+      originalBody = original.body;
+      originalReply = original.reply;
+      originalEdited = original.edited;
+    }
+
+    _enqueueOp(() {
+      _applyEdit(
+        targetId,
+        body: originalBody ?? '',
+        reply: originalReply,
+        edited: originalEdited,
+      );
+      _applyDeleted(targetId, false);
+    });
+    _applyDeleted(targetId, true);
+    _socket.sendDelete(
+      MessageDeletePayload(
+        to: target.isDm ? target.username : null,
+        groupId: target.isGroup ? target.groupId : null,
+        targetId: targetId,
+      ),
+    );
+  }
+
+  Future<void> _handleMessageEdited(MessageEditedPayload payload) async {
+    final targetIsGroup = payload.groupId != null;
+    final Object? original = targetIsGroup
+        ? _groupById(payload.targetId)
+        : _privateById(payload.targetId);
+    final isOwnText = switch (original) {
+      DecryptedMessage(:final fromUsername, :final media, :final deleted) =>
+        fromUsername == payload.fromUsername && media == null && !deleted,
+      DecryptedGroupMessage(:final fromUsername, :final media, :final deleted) =>
+        fromUsername == payload.fromUsername && media == null && !deleted,
+      _ => false,
+    };
+    // The relay is stateless: only the original author may edit, and only
+    // when the original was a text message (spec B author enforcement).
+    if (!isOwnText) return;
+
+    try {
+      final plaintext = await _e2ee.decrypt(
+        payload.fromUsername,
+        payload.ciphertext,
+        payload.iv,
+      );
+      if (_disposed) return;
+      final parsed = parseEnvelope(plaintext);
+      if (parsed.isMedia) return;
+      final body = parsed.isText ? parsed.text! : plaintext;
+      _applyEdit(
+        payload.targetId,
+        body: body,
+        reply: parsed.isText ? parsed.reply : null,
+        edited: true,
+      );
+    } catch (_) {
+      // The shared key vanished mid-flight; keep the original content.
+    }
+  }
+
+  void _handleMessageDeleted(MessageDeletedPayload payload) {
+    final targetIsGroup = payload.groupId != null;
+    final Object? original = targetIsGroup
+        ? _groupById(payload.targetId)
+        : _privateById(payload.targetId);
+    final owned = switch (original) {
+      DecryptedMessage(:final fromUsername, :final deleted) =>
+        fromUsername == payload.fromUsername && !deleted,
+      DecryptedGroupMessage(:final fromUsername, :final deleted) =>
+        fromUsername == payload.fromUsername && !deleted,
+      _ => false,
+    };
+    if (!owned) return;
+    _applyDeleted(payload.targetId, true);
+  }
+
+  /// Replaces body/reply/edited on the message with [targetId] (both
+  /// stores); returns whether anything matched.
+  bool _applyEdit(
+    String targetId, {
+    required String body,
+    required Map<String, dynamic>? reply,
+    required bool edited,
+  }) {
+    var changed = false;
+    for (final bucket in _privateByPeer.values) {
+      for (var i = 0; i < bucket.length; i++) {
+        final entry = bucket[i];
+        if (entry.value.id != targetId) continue;
+        bucket[i] = _Entry<DecryptedMessage>(
+          entry.key,
+          entry.value.copyWith(body: body, reply: reply, edited: edited),
+        );
+        changed = true;
+      }
+    }
+    for (final bucket in _groupByGroup.values) {
+      for (var i = 0; i < bucket.length; i++) {
+        final entry = bucket[i];
+        if (entry.value.id != targetId) continue;
+        bucket[i] = _Entry<DecryptedGroupMessage>(
+          entry.key,
+          entry.value.copyWith(body: body, reply: reply, edited: edited),
+        );
+        changed = true;
+      }
+    }
+    if (changed) _notify();
+    return changed;
+  }
+
+  /// Flips the tombstone flag on the message with [targetId].
+  bool _applyDeleted(String targetId, bool deleted) {
+    var changed = false;
+    for (final bucket in _privateByPeer.values) {
+      for (var i = 0; i < bucket.length; i++) {
+        final entry = bucket[i];
+        if (entry.value.id != targetId) continue;
+        bucket[i] = _Entry<DecryptedMessage>(entry.key, entry.value.copyWith(deleted: deleted));
+        changed = true;
+      }
+    }
+    for (final bucket in _groupByGroup.values) {
+      for (var i = 0; i < bucket.length; i++) {
+        final entry = bucket[i];
+        if (entry.value.id != targetId) continue;
+        bucket[i] = _Entry<DecryptedGroupMessage>(
+          entry.key,
+          entry.value.copyWith(deleted: deleted),
+        );
+        changed = true;
+      }
+    }
+    if (changed) _notify();
+    return changed;
+  }
+
+  // ── Profiles (C9) ──────────────────────────────────────────────────────
+
+  /// Validates and emits `profile:update` for the signed-in user, applying
+  /// the new values optimistically (rollback on `message_rejected`).
+  /// Returns false without sending when either field fails validation —
+  /// the editor renders those errors inline.
+  bool updateProfile(String rawDisplayName, String rawStatus) {
+    final me = _me;
+    if (me == null) return false;
+    final validation = validateProfile(rawDisplayName, rawStatus);
+    if (!validation.isValid) return false;
+    final previous = _profiles[me.username] ?? ProfileEntry(
+      username: me.username,
+      displayName: me.username,
+      status: '',
+    );
+    _enqueueOp(() {
+      _setProfile(
+        me.username,
+        previous.displayName ?? me.username,
+        previous.status ?? '',
+      );
+    });
+    _setProfile(me.username, validation.displayName, validation.status);
+    _socket.sendProfileUpdate(
+      ProfileUpdatePayload(
+        displayName: validation.displayName,
+        status: validation.status,
+      ),
+    );
+    return true;
+  }
+
+  void _handleProfileUpdated(ProfileUpdatedPayload payload) {
+    _setProfile(payload.username, payload.displayName, payload.status);
+  }
+
+  void _setProfile(String username, String displayName, String status) {
+    _profiles[username] = ProfileEntry(
+      username: username,
+      displayName: displayName,
+      status: status,
+    );
+    _notify();
+  }
+
+  /// Seeds profiles from roster snapshots (display name falls back to the
+  /// username so `displayNameOf` never has to look at the raw entry).
+  void _seedProfiles(Iterable<ProfileEntry> entries) {
+    var changed = false;
+    for (final entry in entries) {
+      _profiles[entry.username] = entry;
+      changed = true;
+    }
+    if (changed) _notify();
+  }
+
+  // ── Optimistic ops ─────────────────────────────────────────────────────
+
+  void _enqueueOp(void Function() undo) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _pendingOps.removeWhere((op) => now - op.at > _pendingOpTtlMs);
+    _pendingOps.add(_PendingOp(now, undo));
+  }
+
+  void _runLatestPendingOp() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _pendingOps.removeWhere((op) => now - op.at > _pendingOpTtlMs);
+    if (_pendingOps.isEmpty) return;
+    // Newest first: a rejection lands within one round-trip of its emit, so
+    // the most recent pending op is almost always the one being rejected.
+    _pendingOps.removeLast().undo();
+  }
+
   // ── Errors ─────────────────────────────────────────────────────────────
 
   /// Shows [message] and clears it automatically after the error delay.
@@ -721,6 +1544,12 @@ class ChatController extends ChangeNotifier {
       _socket.onMessageRejected(_handleMessageRejected),
       _socket.onError(_handleErrorEvent),
       _socket.onMediaToken(_handleMediaToken),
+      _socket.onTypingChanged(_handleTypingChanged),
+      _socket.onReceiptRead(_handleReceiptRead),
+      _socket.onMessageReacted(_handleMessageReacted),
+      _socket.onMessageEdited(_handleMessageEdited),
+      _socket.onMessageDeleted(_handleMessageDeleted),
+      _socket.onProfileUpdated(_handleProfileUpdated),
     ]);
   }
 
@@ -747,6 +1576,9 @@ class ChatController extends ChangeNotifier {
 
   void _handleDisconnect() {
     _connectionStatus = ConnectionStatus.disconnected;
+    // Indicators can't survive a dead socket; drop local typing state too.
+    _stopTypingBurst();
+    _clearTypingIndicators();
     _notify();
   }
 
@@ -795,6 +1627,13 @@ class ChatController extends ChangeNotifier {
     }
     if (!_directory.contains(user.username)) _directory.add(user.username);
     _upsertUser(user);
+    _seedProfiles(<ProfileEntry>[
+      ProfileEntry(
+        username: user.username,
+        displayName: user.displayName ?? user.username,
+        status: user.status ?? '',
+      ),
+    ]);
 
     final me = _me;
     if (me != null && user.username == me.username) return;
@@ -817,6 +1656,14 @@ class ChatController extends ChangeNotifier {
 
   void _handleActiveUsers(List<UserInfo> users) {
     _users = List<UserInfo>.of(users);
+    _seedProfiles(<ProfileEntry>[
+      for (final user in users)
+        ProfileEntry(
+          username: user.username,
+          displayName: user.displayName ?? user.username,
+          status: user.status ?? '',
+        ),
+    ]);
     _notify();
     // Include ourselves: the server relays the key back to our own room,
     // which gives us the self shared key used to decrypt our own group
@@ -830,6 +1677,7 @@ class ChatController extends ChangeNotifier {
     _groups = List<GroupInfo>.of(groups);
     // The server re-sends the active tallies right after this snapshot.
     _kickTallies.clear();
+    _seedProfiles(_memberProfiles(groups));
     _notify();
   }
 
@@ -846,7 +1694,24 @@ class ChatController extends ChangeNotifier {
     } else {
       _groups[index] = group;
     }
+    _seedProfiles(_memberProfiles(<GroupInfo>[group]));
     _notify();
+  }
+
+  /// Group members only carry a profile when one is set (web mirrors this
+  /// filter); unprofiled members must not clobber known profiles.
+  static List<ProfileEntry> _memberProfiles(List<GroupInfo> groups) {
+    final entries = <ProfileEntry>[];
+    for (final group in groups) {
+      for (final member in group.members) {
+        final displayName = member.displayName;
+        if (displayName == null) continue;
+        entries.add(
+          ProfileEntry(username: member.username, displayName: displayName, status: ''),
+        );
+      }
+    }
+    return entries;
   }
 
   void _handleGroupMemberRemoved(GroupMemberRemovedPayload payload) {
@@ -917,6 +1782,7 @@ class ChatController extends ChangeNotifier {
   void _handlePrivateMessage(PrivateMessage message) {
     final me = _me;
     final isOwn = me != null && message.from == me.userId;
+    _noteIncomingPrivate(message, isOwn: isOwn);
     // Our own echoed message is encrypted with the recipient's shared key,
     // not with our self key.
     final decryptWith = isOwn ? message.toUsername : message.fromUsername;
@@ -962,8 +1828,14 @@ class ChatController extends ChangeNotifier {
           isOwn: pending.isOwn,
           plaintext: plaintext,
           decryptionFailed: false,
-          media: MediaDescriptor.tryParse(plaintext),
         ),
+      );
+      // The decrypted body may reveal a mention the wire note couldn't see.
+      _noteIncomingPrivate(
+        pending.wire,
+        body: _mentionBodyOf(plaintext, decryptionFailed: false),
+        decryptionFailed: false,
+        isOwn: pending.isOwn,
       );
     } catch (error) {
       if (_disposed) return;
@@ -979,6 +1851,7 @@ class ChatController extends ChangeNotifier {
           decryptionFailed: true,
         ),
       );
+      _noteIncomingPrivate(pending.wire, decryptionFailed: true, isOwn: pending.isOwn);
     }
   }
 
@@ -986,24 +1859,50 @@ class ChatController extends ChangeNotifier {
     _upsert(_privateByPeer, message.peerUsername, pending.key, message);
   }
 
+  /// The mention-relevant body of a decrypted payload: null for media and
+  /// failed decryption (neither can mention anyone).
+  String? _mentionBodyOf(String plaintext, {required bool decryptionFailed}) {
+    if (decryptionFailed) return null;
+    final parsed = parseEnvelope(plaintext);
+    if (parsed.isMedia) return null;
+    return parsed.isText ? parsed.text : plaintext;
+  }
+
   static DecryptedMessage _privateMessage({
     required PrivateMessage wire,
     required bool isOwn,
     required String plaintext,
     required bool decryptionFailed,
-    MediaDescriptor? media,
   }) {
+    final unwrapped = _unwrapPlaintext(plaintext, decryptionFailed);
     return DecryptedMessage(
+      id: wire.id,
       from: wire.from,
       fromUsername: wire.fromUsername,
       to: wire.to,
       toUsername: wire.toUsername,
       plaintext: plaintext,
+      body: unwrapped.body,
+      reply: unwrapped.reply,
+      edited: false,
+      deleted: false,
       timestamp: wire.timestamp,
       isOwn: isOwn,
       decryptionFailed: decryptionFailed,
-      media: media,
+      media: unwrapped.media,
     );
+  }
+
+  /// Envelope-unwrapped view of a decrypted payload (spec C3): a media
+  /// descriptor, a text body plus optional reply ref, or the raw string
+  /// itself for legacy / unknown envelopes.
+  static ({String? body, Map<String, dynamic>? reply, MediaDescriptor? media})
+  _unwrapPlaintext(String plaintext, bool decryptionFailed) {
+    if (decryptionFailed) return (body: null, reply: null, media: null);
+    final parsed = parseEnvelope(plaintext);
+    if (parsed.isMedia) return (body: null, reply: null, media: parsed.media);
+    if (parsed.isText) return (body: parsed.text, reply: parsed.reply, media: null);
+    return (body: plaintext, reply: null, media: null);
   }
 
   // ── Group message handling ─────────────────────────────────────────────
@@ -1022,6 +1921,7 @@ class ChatController extends ChangeNotifier {
 
     final key = message.dedupeKey;
     final isOwn = message.from == me.userId;
+    _noteIncomingGroup(message, isOwn: isOwn);
     if (myEntry == null) {
       // No ciphertext addressed to us; show a placeholder like the web
       // client (there is nothing to decrypt later).
@@ -1085,8 +1985,14 @@ class ChatController extends ChangeNotifier {
           isOwn: pending.isOwn,
           plaintext: plaintext,
           decryptionFailed: false,
-          media: MediaDescriptor.tryParse(plaintext),
         ),
+      );
+      // The decrypted body may reveal a mention the wire note couldn't see.
+      _noteIncomingGroup(
+        pending.wire,
+        body: _mentionBodyOf(plaintext, decryptionFailed: false),
+        decryptionFailed: false,
+        isOwn: pending.isOwn,
       );
     } catch (error) {
       if (_disposed) return;
@@ -1103,6 +2009,7 @@ class ChatController extends ChangeNotifier {
           decryptionFailed: true,
         ),
       );
+      _noteIncomingGroup(pending.wire, decryptionFailed: true, isOwn: pending.isOwn);
     }
   }
 
@@ -1111,17 +2018,22 @@ class ChatController extends ChangeNotifier {
     required bool isOwn,
     required String plaintext,
     required bool decryptionFailed,
-    MediaDescriptor? media,
   }) {
+    final unwrapped = _unwrapPlaintext(plaintext, decryptionFailed);
     return DecryptedGroupMessage(
+      id: wire.id,
       groupId: wire.groupId,
       from: wire.from,
       fromUsername: wire.fromUsername,
       plaintext: plaintext,
+      body: unwrapped.body,
+      reply: unwrapped.reply,
+      edited: false,
+      deleted: false,
       timestamp: wire.timestamp,
       isOwn: isOwn,
       decryptionFailed: decryptionFailed,
-      media: media,
+      media: unwrapped.media,
     );
   }
 
@@ -1144,6 +2056,8 @@ class ChatController extends ChangeNotifier {
 
   void _handleMessageRejected(MessageRejectedPayload payload) {
     _showError(friendlyErrorText(payload.reason));
+    // The rejection carries no correlation id: undo the newest fresh op.
+    _runLatestPendingOp();
   }
 
   void _handleErrorEvent(ErrorPayload payload) {
@@ -1185,6 +2099,12 @@ class ChatController extends ChangeNotifier {
     _disposed = true;
     _errorTimer?.cancel();
     _errorTimer = null;
+    _typingRepeatTimer?.cancel();
+    _typingRepeatTimer = null;
+    for (final timer in _typingHideTimers.values) {
+      timer.cancel();
+    }
+    _typingHideTimers.clear();
     for (final unsubscribe in _subscriptions) {
       unsubscribe();
     }

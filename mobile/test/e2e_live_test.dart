@@ -8,7 +8,9 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:scattered_keyhole/src/models/models.dart';
 import 'package:scattered_keyhole/src/state/chat_controller.dart';
+import 'package:scattered_keyhole/src/utils/envelope.dart';
 
 void main() {
   final live = Platform.environment['RUN_LIVE_E2E'] == '1';
@@ -49,7 +51,7 @@ void main() {
         () => bob.messagesForPeer(aName).isNotEmpty,
         'bob received message',
       );
-      expect(bob.messagesForPeer(aName).last.plaintext, 'hello from alice e2e');
+      expect(bob.messagesForPeer(aName).last.body, 'hello from alice e2e');
 
       expect(
         await bob.sendMessage(aName, 'reply from bob'),
@@ -65,13 +67,13 @@ void main() {
       await _waitFor(
         () => alice
             .messagesForPeer(bName)
-            .any((m) => !m.isOwn && m.plaintext == 'reply from bob'),
+            .any((m) => !m.isOwn && m.body == 'reply from bob'),
         'alice decrypted bob reply',
       );
       final reply = alice
           .messagesForPeer(bName)
           .lastWhere((m) => !m.isOwn);
-      expect(reply.plaintext, 'reply from bob');
+      expect(reply.body, 'reply from bob');
     },
     timeout: const Timeout(Duration(seconds: 30)),
     skip: !live,
@@ -246,6 +248,144 @@ void main() {
       expect(fetched.bytes, orderedEquals(original));
     },
     timeout: const Timeout(Duration(seconds: 30)),
+    skip: !live,
+  );
+
+  test(
+    'typing, reactions, edits, and read receipts through live backend',
+    () async {
+      final suffix = DateTime.now().millisecondsSinceEpoch % 100000;
+      final aName = 'alice_$suffix';
+      final bName = 'bob_$suffix';
+      final alice = ChatController.forServer(serverUrl: url);
+      final bob = ChatController.forServer(serverUrl: url);
+      addTearDown(alice.dispose);
+      addTearDown(bob.dispose);
+
+      alice.joinAsGuest(aName);
+      bob.joinAsGuest(bName);
+
+      await _waitFor(() => alice.me != null && bob.me != null, 'both joined');
+      await _waitFor(
+        () =>
+            alice.e2ee.hasSharedKey(bName) && bob.e2ee.hasSharedKey(aName),
+        'shared keys derived on both sides',
+      );
+
+      // Message 1: a plain text send. Its wire id is what every later
+      // tier-1 operation (reply, react, edit, delete) has to target.
+      expect(
+        await alice.sendMessage(bName, 'original body'),
+        isTrue,
+        reason: 'alice send failed: ${alice.error}',
+      );
+      await _waitFor(
+        () => bob.messagesForPeer(aName).any((m) => m.body == 'original body'),
+        'bob decrypted message 1',
+      );
+      final targetId = bob
+          .messagesForPeer(aName)
+          .firstWhere((m) => m.body == 'original body')
+          .id;
+      expect(targetId, isNotEmpty, reason: 'relay dropped the message id');
+      await _waitFor(
+        () => alice.messagesForPeer(bName).any((m) => m.id == targetId),
+        'alice echo carries the same id',
+      );
+      final sentAt = alice
+          .messagesForPeer(bName)
+          .firstWhere((m) => m.id == targetId)
+          .timestamp;
+
+      // A reply wraps the {id, u, e} ref back to message 1 (spec C4).
+      expect(
+        await alice.sendMessage(
+          bName,
+          'reply body',
+          reply: buildReplyRef(
+            id: targetId,
+            username: aName,
+            excerpt: 'original body',
+          ),
+        ),
+        isTrue,
+        reason: 'alice reply failed: ${alice.error}',
+      );
+      await _waitFor(
+        () => bob.messagesForPeer(aName).any((m) => m.body == 'reply body'),
+        'bob received the reply',
+      );
+      final reply = bob
+          .messagesForPeer(aName)
+          .firstWhere((m) => m.body == 'reply body');
+      expect(reply.reply, isNotNull, reason: 'reply ref dropped in transit');
+      expect(reply.reply!['id'], targetId);
+      expect(reply.reply!['u'], aName);
+
+      // Bob's 👍 aggregates into alice's reaction state (C5).
+      bob.toggleReaction(ConversationTarget.dm(aName), targetId, '👍');
+      await _waitFor(
+        () => alice.reactionsFor(targetId)['👍']?.contains(bName) ?? false,
+        'alice observes bob\'s reaction',
+      );
+      expect(alice.reactionsFor(targetId)['👍'], contains(bName));
+
+      // Alice edits message 1; bob gets the new body and the edited flag (C6).
+      expect(
+        await alice.editMessage(
+          ConversationTarget.dm(bName),
+          targetId,
+          'edited body',
+        ),
+        isTrue,
+        reason: 'alice edit failed: ${alice.error}',
+      );
+      await _waitFor(
+        () {
+          final matches = bob
+              .messagesForPeer(aName)
+              .where((m) => m.id == targetId)
+              .toList();
+          return matches.isNotEmpty &&
+              matches.last.body == 'edited body' &&
+              matches.last.edited;
+        },
+        'bob sees the edited body with the edited flag',
+      );
+
+      // Opening the conversation is bob's read trigger (C2); the receipt
+      // travels back with an upTo covering message 1's timestamp.
+      bob.selectPeer(aName);
+      await _waitFor(
+        () => alice.readUpToFor(bName) >= sentAt,
+        'alice observes bob\'s read receipt',
+      );
+      expect(alice.readUpToFor(bName), greaterThanOrEqualTo(sentAt));
+
+      // Bob starts typing: the first flag relays immediately (the backend
+      // only debounces duplicates), and alice's client auto-hides after
+      // 6 s — so assert inside that window (C1).
+      bob.sendTyping(ConversationTarget.dm(aName));
+      await _waitFor(
+        () => alice.typingUsernamesIn(peer: bName).contains(bName),
+        'alice observes bob typing',
+      );
+      bob.stopTyping();
+
+      // Alice deletes message 1; bob's copy flips to a tombstone (C6).
+      alice.deleteMessage(ConversationTarget.dm(bName), targetId);
+      await _waitFor(
+        () => bob
+            .messagesForPeer(aName)
+            .any((m) => m.id == targetId && m.deleted),
+        'bob sees the tombstone',
+      );
+      expect(
+        bob.messagesForPeer(aName).firstWhere((m) => m.id == targetId).deleted,
+        isTrue,
+      );
+    },
+    timeout: const Timeout(Duration(seconds: 60)),
     skip: !live,
   );
 }

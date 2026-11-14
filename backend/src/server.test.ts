@@ -10,6 +10,7 @@ import { E2eeSession } from './e2ee-session';
 import { GroupStore } from './group-store';
 import { KickVoteStore } from './kick-vote-store';
 import { MediaAuth } from './media-auth';
+import { ProfileStore } from './profile-store';
 import { RateLimiterRegistry } from './rate-limiter';
 import { createServer } from './server';
 import type {
@@ -37,6 +38,12 @@ type TestClient = ReturnType<typeof Client>;
 
 function makeUrl(port: number): string {
   return `http://localhost:${port}`;
+}
+
+// Tier-1 sends carry a sender-generated UUIDv4, so every message payload in
+// these tests needs one.
+function newMessageId(): string {
+  return crypto.randomUUID();
 }
 
 function createClient(port: number) {
@@ -133,6 +140,7 @@ describe('Socket.io Server', () => {
   let userDirectory: UserDirectory;
   let kickVoteStore: KickVoteStore;
   let mediaAuth: MediaAuth;
+  let profileStore: ProfileStore;
   let bunServer: ReturnType<typeof Bun.serve>;
   let port: number;
   const clients: TestClient[] = [];
@@ -149,6 +157,7 @@ describe('Socket.io Server', () => {
     userDirectory = new UserDirectory(db);
     kickVoteStore = new KickVoteStore();
     mediaAuth = new MediaAuth();
+    profileStore = new ProfileStore();
     createServer(
       io,
       userRegistry,
@@ -158,6 +167,7 @@ describe('Socket.io Server', () => {
       userDirectory,
       kickVoteStore,
       mediaAuth,
+      profileStore,
       pino({ level: 'silent' }),
     );
 
@@ -187,6 +197,7 @@ describe('Socket.io Server', () => {
     userRegistry.destroy();
     kickVoteStore.destroy();
     mediaAuth.destroy();
+    profileStore.destroy();
     rateLimiters.destroy();
     accountStore.destroy();
     groupStore.destroy();
@@ -232,6 +243,7 @@ describe('Socket.io Server', () => {
     const enc = await aliceSession.encrypt('bob', 'hello bob');
     const msgPromise = waitEvent<PrivateMessage>(clientB, EVENTS.SERVER.PRIVATE_MESSAGE);
     clientA.emit(EVENTS.CLIENT.MESSAGE_SEND, {
+      id: newMessageId(),
       to: 'bob',
       ciphertext: enc.ciphertext,
       iv: enc.iv,
@@ -257,6 +269,7 @@ describe('Socket.io Server', () => {
       readonly to: string;
     }>(client, EVENTS.SERVER.DELIVERY_FAILED);
     client.emit(EVENTS.CLIENT.MESSAGE_SEND, {
+      id: newMessageId(),
       to: 'nonexistent',
       ciphertext: 'dummy',
       iv: 'dummy',
@@ -276,7 +289,12 @@ describe('Socket.io Server', () => {
     await join(client, 'alice');
 
     const rejectPromise = waitEvent<MessageRejectedPayload>(client, EVENTS.SERVER.MESSAGE_REJECTED);
-    client.emit(EVENTS.CLIENT.MESSAGE_SEND, { to: 'bob', ciphertext: '', iv: 'dummy' });
+    client.emit(EVENTS.CLIENT.MESSAGE_SEND, {
+      id: newMessageId(),
+      to: 'bob',
+      ciphertext: '',
+      iv: 'dummy',
+    });
     const rejected = await rejectPromise;
 
     expect(rejected.reason.length).toBeGreaterThan(0);
@@ -290,7 +308,12 @@ describe('Socket.io Server', () => {
     await join(client, 'alice');
 
     const rejectPromise = waitEvent<MessageRejectedPayload>(client, EVENTS.SERVER.MESSAGE_REJECTED);
-    client.emit(EVENTS.CLIENT.MESSAGE_SEND, { to: 'bob', ciphertext: 'x', iv: '' });
+    client.emit(EVENTS.CLIENT.MESSAGE_SEND, {
+      id: newMessageId(),
+      to: 'bob',
+      ciphertext: 'x',
+      iv: '',
+    });
     const rejected = await rejectPromise;
 
     expect(rejected.reason.length).toBeGreaterThan(0);
@@ -305,7 +328,12 @@ describe('Socket.io Server', () => {
 
     const rejectPromise = waitEvent<MessageRejectedPayload>(client, EVENTS.SERVER.MESSAGE_REJECTED);
     for (let i = 0; i < CONSTANTS.RATE_LIMIT_MAX + 5; i++) {
-      client.emit(EVENTS.CLIENT.MESSAGE_SEND, { to: 'bob', ciphertext: 'x', iv: 'y' });
+      client.emit(EVENTS.CLIENT.MESSAGE_SEND, {
+        id: newMessageId(),
+        to: 'bob',
+        ciphertext: 'x',
+        iv: 'y',
+      });
     }
     const rejected = await rejectPromise;
 
@@ -349,6 +377,7 @@ describe('Socket.io Server', () => {
       readonly to: string;
     }>(clientA, EVENTS.SERVER.DELIVERY_FAILED);
     clientA.emit(EVENTS.CLIENT.MESSAGE_SEND, {
+      id: newMessageId(),
       to: 'bob',
       ciphertext: 'dummy',
       iv: 'dummy',
@@ -398,6 +427,7 @@ describe('Socket.io Server', () => {
     const enc = await aliceSession.encrypt('bob10', plaintext);
     const msgPromise = waitEvent<PrivateMessage>(clientB, EVENTS.SERVER.PRIVATE_MESSAGE);
     clientA.emit(EVENTS.CLIENT.MESSAGE_SEND, {
+      id: newMessageId(),
       to: 'bob10',
       ciphertext: enc.ciphertext,
       iv: enc.iv,
@@ -433,6 +463,7 @@ describe('Socket.io Server', () => {
     const echoPromise = waitEvent<PrivateMessage>(clientA, EVENTS.SERVER.PRIVATE_MESSAGE);
     const msgPromise = waitEvent<PrivateMessage>(clientB, EVENTS.SERVER.PRIVATE_MESSAGE);
     clientA.emit(EVENTS.CLIENT.MESSAGE_SEND, {
+      id: newMessageId(),
       to: 'bob11',
       ciphertext: enc.ciphertext,
       iv: enc.iv,
@@ -505,6 +536,7 @@ describe('Socket.io Server', () => {
 
     const msgPromise = waitEvent<GroupMessage>(clientB, EVENTS.SERVER.GROUP_MESSAGE);
     clientA.emit(EVENTS.CLIENT.GROUP_MESSAGE_SEND, {
+      id: newMessageId(),
       groupId: group.groupId,
       ciphertexts: [{ to: 'gmember', ciphertext: 'encrypted1', iv: 'iv1' }],
     });
@@ -528,6 +560,7 @@ describe('Socket.io Server', () => {
       EVENTS.SERVER.GROUP_MESSAGE_DELIVERY_FAILED,
     );
     client.emit(EVENTS.CLIENT.GROUP_MESSAGE_SEND, {
+      id: newMessageId(),
       groupId: 'nonexistent-group',
       ciphertexts: [{ to: 'someone', ciphertext: 'enc', iv: 'iv' }],
     });
@@ -721,6 +754,7 @@ describe('Socket.io Server', () => {
     const ciphertext = 'x'.repeat(20_000);
     const msgPromise = waitEvent<PrivateMessage>(client, EVENTS.SERVER.PRIVATE_MESSAGE);
     client.emit(EVENTS.CLIENT.MESSAGE_SEND, {
+      id: newMessageId(),
       to: 'bigsender',
       ciphertext,
       iv: 'aGVsbG8=',

@@ -6,6 +6,7 @@ class GroupMember {
     required this.userId,
     required this.username,
     required this.isAdmin,
+    this.displayName,
   });
 
   factory GroupMember.fromJson(Map<String, dynamic> json) {
@@ -13,6 +14,9 @@ class GroupMember {
       userId: readString(json['userId']),
       username: readString(json['username']),
       isAdmin: readBool(json['isAdmin']),
+      displayName: json['displayName'] is String
+          ? json['displayName'] as String
+          : null,
     );
   }
 
@@ -20,10 +24,16 @@ class GroupMember {
   final String username;
   final bool isAdmin;
 
+  /// Optional profile display name; falls back to [username] when absent.
+  final String? displayName;
+
+  String get displayNameOrUsername => displayName ?? username;
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'userId': userId,
     'username': username,
     'isAdmin': isAdmin,
+    if (displayName != null) 'displayName': displayName,
   };
 
   @override
@@ -31,11 +41,12 @@ class GroupMember {
     return other is GroupMember &&
         other.userId == userId &&
         other.username == username &&
-        other.isAdmin == isAdmin;
+        other.isAdmin == isAdmin &&
+        other.displayName == displayName;
   }
 
   @override
-  int get hashCode => Object.hash(userId, username, isAdmin);
+  int get hashCode => Object.hash(userId, username, isAdmin, displayName);
 }
 
 /// Mirrors `GroupInfo` from the backend contract.

@@ -5,11 +5,15 @@ export type UserInfo = {
   readonly username: string;
   readonly socketId: string;
   readonly joinedAt: number;
+  // Profile fields are stamped on by the server from its in-memory store.
+  readonly displayName?: string;
+  readonly status?: string;
 };
 
 // ── Payload types ──
 
 export type EncryptedMessagePayload = {
+  readonly id: string;
   readonly to: string;
   readonly ciphertext: string;
   readonly iv: string;
@@ -25,22 +29,49 @@ export type PrivateMessage = {
   readonly fromUsername: string;
   readonly to: string;
   readonly toUsername: string;
+  readonly id: string;
   readonly ciphertext: string;
   readonly iv: string;
   readonly timestamp: number;
 };
 
+// Reply reference carried inside a v2 text envelope (C4).
+export type ReplyRef = {
+  readonly id: string;
+  readonly u: string;
+  readonly e: string;
+};
+
+// Envelope v2: plaintext of newly sent text messages is discriminated JSON.
+export type TextEnvelope = {
+  readonly t: 'text';
+  readonly b: string;
+  readonly r?: ReplyRef;
+};
+
+// Result of the ordered envelope parse (C3): media → text → legacy raw.
+export type ParsedEnvelope =
+  | { readonly kind: 'media'; readonly descriptor: MediaDescriptor }
+  | { readonly kind: 'text'; readonly body: string; readonly reply: ReplyRef | null }
+  | { readonly kind: 'raw'; readonly text: string };
+
 // Decrypted view of a PrivateMessage (what the UI renders)
 export type DecryptedMessage = {
+  readonly id: string;
   readonly from: string;
   readonly fromUsername: string;
   readonly to: string;
   readonly toUsername: string;
   readonly plaintext: string;
+  // Envelope-unwrapped body; '' for media and failed decryptions.
+  readonly body: string;
+  readonly reply: ReplyRef | null;
+  readonly edited: boolean;
+  readonly deleted: boolean;
   readonly timestamp: number;
   readonly isOwn: boolean;
   readonly decryptionFailed: boolean;
-  readonly media?: MediaDescriptor | null;
+  readonly media: MediaDescriptor | null;
 };
 
 // ── Media types ──
@@ -70,6 +101,9 @@ export type GroupMember = {
   readonly userId: string;
   readonly username: string;
   readonly isAdmin: boolean;
+  // Profile fields are stamped on by the server from its in-memory store.
+  readonly displayName?: string;
+  readonly status?: string;
 };
 
 export type GroupInfo = {
@@ -81,6 +115,7 @@ export type GroupInfo = {
 };
 
 export type GroupEncryptedPayload = {
+  readonly id: string;
   readonly groupId: string;
   readonly ciphertexts: readonly {
     readonly to: string;
@@ -93,6 +128,7 @@ export type GroupMessage = {
   readonly groupId: string;
   readonly from: string;
   readonly fromUsername: string;
+  readonly id: string;
   readonly ciphertexts: readonly {
     readonly to: string;
     readonly ciphertext: string;
@@ -102,14 +138,19 @@ export type GroupMessage = {
 };
 
 export type DecryptedGroupMessage = {
+  readonly id: string;
   readonly groupId: string;
   readonly from: string;
   readonly fromUsername: string;
   readonly plaintext: string;
+  readonly body: string;
+  readonly reply: ReplyRef | null;
+  readonly edited: boolean;
+  readonly deleted: boolean;
   readonly timestamp: number;
   readonly isOwn: boolean;
   readonly decryptionFailed: boolean;
-  readonly media?: MediaDescriptor | null;
+  readonly media: MediaDescriptor | null;
 };
 
 export type GroupTargetPayload = {
@@ -131,6 +172,121 @@ export type KickTally = {
   readonly status: 'active' | 'passed' | 'expired';
   readonly expiresAt: number;
 };
+
+// ── Tier-1 relay payloads ──
+// Mirrors backend/src/types.ts one-for-one (spec B).
+
+export type TypingSendPayload = {
+  readonly to?: string;
+  readonly groupId?: string;
+  readonly active: boolean;
+};
+
+export type ReceiptReadPayload = {
+  readonly to: string;
+  readonly upTo: number;
+};
+
+export type MessageReactPayload = {
+  readonly to?: string;
+  readonly groupId?: string;
+  readonly targetId: string;
+  readonly emoji: string;
+  readonly active: boolean;
+};
+
+export type MessageEditPayload = {
+  readonly to?: string;
+  readonly groupId?: string;
+  readonly targetId: string;
+  readonly ciphertext: string;
+  readonly iv: string;
+};
+
+export type MessageDeletePayload = {
+  readonly to?: string;
+  readonly groupId?: string;
+  readonly targetId: string;
+};
+
+export type ProfileUpdatePayload = {
+  readonly displayName: string;
+  readonly status: string;
+};
+
+export type TypingChangedPayload = {
+  readonly from: string;
+  readonly fromUsername: string;
+  readonly to?: string;
+  readonly groupId?: string;
+  readonly active: boolean;
+};
+
+export type ReceiptReadRelay = {
+  readonly from: string;
+  readonly fromUsername: string;
+  readonly upTo: number;
+};
+
+export type MessageReactedPayload = {
+  readonly from: string;
+  readonly fromUsername: string;
+  readonly to?: string;
+  readonly groupId?: string;
+  readonly targetId: string;
+  readonly emoji: string;
+  readonly active: boolean;
+  readonly timestamp: number;
+};
+
+export type MessageEditedPayload = {
+  readonly from: string;
+  readonly fromUsername: string;
+  readonly to?: string;
+  readonly groupId?: string;
+  readonly targetId: string;
+  readonly ciphertext: string;
+  readonly iv: string;
+  readonly timestamp: number;
+};
+
+export type MessageDeletedPayload = {
+  readonly from: string;
+  readonly fromUsername: string;
+  readonly to?: string;
+  readonly groupId?: string;
+  readonly targetId: string;
+  readonly timestamp: number;
+};
+
+export type ProfileUpdatedPayload = {
+  readonly username: string;
+  readonly displayName: string;
+  readonly status: string;
+};
+
+// ── Client-side tier-1 state shapes ──
+
+// A conversation as addressed by client features (typing, reactions, unread).
+export type ConversationTarget =
+  | { readonly kind: 'dm'; readonly username: string }
+  | { readonly kind: 'group'; readonly groupId: string };
+
+// targetId → emoji → usernames of reactors.
+export type ReactionAgg = Readonly<Record<string, readonly string[]>>;
+
+export type UnreadEntry = {
+  readonly count: number;
+  readonly mention: boolean;
+};
+
+export type ProfileEntry = {
+  readonly displayName: string;
+  readonly status: string;
+};
+
+// Fixed quick-picker set — order is part of the contract (C5).
+export const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉', '🔥', '👀'] as const;
 
 // ── Auth payloads ──
 
@@ -184,6 +340,8 @@ export const CONSTANTS = {
   MAX_PIN_LENGTH: 6,
   RATE_LIMIT_MAX: 10,
   MAX_MEDIA_BYTES: 16 * 1024 * 1024,
+  MAX_DISPLAY_NAME_LENGTH: 32,
+  MAX_STATUS_LENGTH: 80,
 } as const;
 
 // ── Socket event maps ──
@@ -199,6 +357,12 @@ export type ClientToServerEvents = {
   'group:member:add': (payload: GroupTargetPayload) => void;
   'group:member:remove': (payload: GroupTargetPayload) => void;
   'group:kick:vote': (payload: GroupTargetPayload) => void;
+  'typing:send': (payload: TypingSendPayload) => void;
+  'receipt:read': (payload: ReceiptReadPayload) => void;
+  'message:react': (payload: MessageReactPayload) => void;
+  'message:edit': (payload: MessageEditPayload) => void;
+  'message:delete': (payload: MessageDeletePayload) => void;
+  'profile:update': (payload: ProfileUpdatePayload) => void;
 };
 
 export type ServerToClientEvents = {
@@ -223,6 +387,12 @@ export type ServerToClientEvents = {
   'group:member:removed': (payload: GroupMemberRemovedPayload) => void;
   'group:kick:tally': (payload: KickTally) => void;
   'media:token': (payload: MediaTokenPayload) => void;
+  'typing:changed': (payload: TypingChangedPayload) => void;
+  'receipt:read': (payload: ReceiptReadRelay) => void;
+  'message:reacted': (payload: MessageReactedPayload) => void;
+  'message:edited': (payload: MessageEditedPayload) => void;
+  'message:deleted': (payload: MessageDeletedPayload) => void;
+  'profile:updated': (payload: ProfileUpdatedPayload) => void;
 };
 
 // ── Event name map ──
@@ -239,6 +409,12 @@ export const EVENTS = {
     GROUP_MEMBER_ADD: 'group:member:add',
     GROUP_MEMBER_REMOVE: 'group:member:remove',
     GROUP_KICK_VOTE: 'group:kick:vote',
+    TYPING_SEND: 'typing:send',
+    RECEIPT_READ: 'receipt:read',
+    MESSAGE_REACT: 'message:react',
+    MESSAGE_EDIT: 'message:edit',
+    MESSAGE_DELETE: 'message:delete',
+    PROFILE_UPDATE: 'profile:update',
   },
   SERVER: {
     USER_JOINED: 'user:joined',
@@ -262,5 +438,11 @@ export const EVENTS = {
     GROUP_MEMBER_REMOVED: 'group:member:removed',
     GROUP_KICK_TALLY: 'group:kick:tally',
     MEDIA_TOKEN: 'media:token',
+    TYPING_CHANGED: 'typing:changed',
+    RECEIPT_READ: 'receipt:read',
+    MESSAGE_REACTED: 'message:reacted',
+    MESSAGE_EDITED: 'message:edited',
+    MESSAGE_DELETED: 'message:deleted',
+    PROFILE_UPDATED: 'profile:updated',
   },
 } as const;

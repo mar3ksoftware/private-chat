@@ -23,6 +23,12 @@ The repository ships three components: a Bun backend on port 3000, a React web a
 
 - **End-to-end encryption** — ECDH P-256 → HKDF-SHA256 → AES-256-GCM; the server never sees plaintext
 - **Direct and group messages** — offline group members keep their membership and pick the group up on rejoin
+- **Typing indicators** — live "is typing…" state in DMs and groups
+- **Read receipts** — DM read ticks flip when the peer reads your messages
+- **Reactions** — emoji reactions on messages with aggregated counts
+- **Replies and edits** — quote a message, or edit your own text with an `(edited)` marker
+- **Delete for everyone** — tombstone any message you sent
+- **Unread badges and mentions** — per-conversation unread counts with `@username` highlights
 - **Group administration** — admins add and remove members; the group creator cannot be removed or kicked
 - **Vote-to-kick** — members vote to remove someone; a simple majority (`floor(members / 2) + 1`) within 60 s passes the vote
 - **Guest and account auth** — join as a guest, or register and log in with a password plus an optional 4–6 digit PIN
@@ -273,7 +279,8 @@ Scattered Keyhole/
 | Module | Purpose |
 |---|---|
 | `src/index.ts` | Bun.serve entry point, health check, graceful shutdown |
-| `src/server.ts` | Socket.io event handlers (join, register, login, message, e2ee relay, groups, membership, vote-kick, disconnect) |
+| `src/server.ts` | Socket.io event handlers (join, register, login, message, e2ee relay, groups, membership, vote-kick, typing, receipts, reactions, edit/delete, profiles, disconnect) |
+| `src/profile-store.ts` | In-memory display name and status store, stamped onto presence and group snapshots |
 | `src/types.ts` | Branded types, event maps, payload types |
 | `src/config.ts` | Environment-driven configuration (port, CORS, log level, ping, TLS, DB path) |
 | `src/account-store.ts` | SQLite persistence via `bun:sqlite`, bcrypt via `Bun.password` |
@@ -339,6 +346,12 @@ Full types live in `backend/src/types.ts`; the Flutter client mirrors the names 
 | `group:member:add`, `group:member:remove` | Admin-only membership changes |
 | `group:kick:vote` | Vote to kick a member (majority required, 60 s window) |
 | `group:message:send` | Group message: one ciphertext per member the sender holds a shared key for |
+| `typing:send` | Typing indicator state for a DM or group conversation |
+| `receipt:read` | Mark a DM peer's messages as read up to a timestamp |
+| `message:react` | Add or remove an emoji reaction on a message |
+| `message:edit` | Replace the ciphertext of a message the sender authored |
+| `message:delete` | Tombstone a message the sender authored for everyone |
+| `profile:update` | Set own display name (max 32) and status (max 80) |
 
 **Server → client:**
 
@@ -351,6 +364,12 @@ Full types live in `backend/src/types.ts`; the Flutter client mirrors the names 
 | `private_message` | Ciphertext-only direct message |
 | `group:message` | Group message carrying the per-member ciphertexts |
 | `group:created`, `group:created_error`, `group:message_delivery_failed`, `group:member:removed`, `group:kick:tally` | Group lifecycle, membership changes, live vote tallies (`active` / `passed` / `expired`) |
+| `typing:changed` | Who is currently typing in a conversation (sent to everyone but the typer) |
+| `receipt:read` | The DM peer read messages up to a timestamp |
+| `message:reacted` | Reaction added or removed (emoji + usernames, sent to everyone but the actor) |
+| `message:edited` | Message body replaced (new ciphertext + `edited` flag) |
+| `message:deleted` | Message tombstoned for everyone |
+| `profile:updated` | Display name or status changed (broadcast to all active users) |
 | `delivery_failed`, `message_rejected`, `error` | Failures — there is no offline queue, a message to an offline user fails immediately |
 | `register_success` / `register_error`, `login_success` / `login_error` | Auth results |
 | `media:token` | Bearer token for the HTTP media endpoints |

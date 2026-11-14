@@ -9,6 +9,8 @@ class UserInfo {
     required this.username,
     required this.socketId,
     required this.joinedAt,
+    this.displayName,
+    this.status,
   });
 
   factory UserInfo.fromJson(Map<String, dynamic> json) {
@@ -17,6 +19,10 @@ class UserInfo {
       username: readString(json['username']),
       socketId: readString(json['socketId']),
       joinedAt: readInt(json['joinedAt']),
+      displayName: json['displayName'] is String
+          ? json['displayName'] as String
+          : null,
+      status: json['status'] is String ? json['status'] as String : null,
     );
   }
 
@@ -28,11 +34,19 @@ class UserInfo {
   /// Unix epoch milliseconds.
   final int joinedAt;
 
+  /// Optional profile display name (`profile:updated` / relayed messages).
+  final String? displayName;
+
+  /// Optional profile status text.
+  final String? status;
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'userId': userId,
     'username': username,
     'socketId': socketId,
     'joinedAt': joinedAt,
+    if (displayName != null) 'displayName': displayName,
+    if (status != null) 'status': status,
   };
 
   UserInfo copyWith({
@@ -40,12 +54,16 @@ class UserInfo {
     String? username,
     String? socketId,
     int? joinedAt,
+    String? displayName,
+    String? status,
   }) {
     return UserInfo(
       userId: userId ?? this.userId,
       username: username ?? this.username,
       socketId: socketId ?? this.socketId,
       joinedAt: joinedAt ?? this.joinedAt,
+      displayName: displayName ?? this.displayName,
+      status: status ?? this.status,
     );
   }
 
@@ -55,11 +73,14 @@ class UserInfo {
         other.userId == userId &&
         other.username == username &&
         other.socketId == socketId &&
-        other.joinedAt == joinedAt;
+        other.joinedAt == joinedAt &&
+        other.displayName == displayName &&
+        other.status == status;
   }
 
   @override
-  int get hashCode => Object.hash(userId, username, socketId, joinedAt);
+  int get hashCode =>
+      Object.hash(userId, username, socketId, joinedAt, displayName, status);
 
   @override
   String toString() => 'UserInfo($username, $userId)';

@@ -23,6 +23,12 @@ Projekt sklada sie z trzech czesci: backendu na Bun (port 3000), aplikacji webow
 
 - **Szyfrowanie end-to-end.** ECDH P-256 -> HKDF-SHA256 -> AES-256-GCM; serwer nigdy nie widzi tekstu jawnego.
 - **Wiadomosci prywatne i grupowe.** Czlonek grupy, ktory jest offline, zachowuje czlonkostwo i po ponownym dolaczeniu wraca do grupy.
+- **Wskazywanie pisania.** Zywym stanem "pisze..." w wiadomosciach prywatnych i grupowych.
+- **Potwierdzenia przeczytania.** Hak przeczytania wiadomosci prywatnej zmienia sie, gdy odbiorca ja przeczyta.
+- **Reakcje.** Reakcje emoji na wiadomosciach z zagregowanymi licznikami.
+- **Odpowiedzi i edycja.** Cytowanie wiadomosci oraz edycja wlasnego tekstu ze znacznikiem `(edited)`.
+- **Usuniecie dla wszystkich.** Tombstone dowolnej wyslanej wiadomosci.
+- **Liczniki nieprzeczytanych i wzmianki.** Liczniki nieprzeczytanych per rozmowa z podswietleniami `@username`.
 - **Administracja grupami.** Admini dodaja i usuwaja czlonkow; tworca grupy nie moze zostac usuniety ani wyrzucony.
 - **Glosowanie o wyrzucenie.** Czlonkowie glosuja nad wyrzuceniem kogos; do przyjecia wystarcza zwykla wiekszosc (`floor(members / 2) + 1`) w 60 sekund.
 - **Gosc i konta.** Mozna dolaczyc jako gosc albo zarejestrowac sie i zalogowac haslem oraz opcjonalnym PIN-em (4-6 cyfr).
@@ -273,7 +279,8 @@ Scattered Keyhole/
 | Modul | Opis |
 |---|---|
 | `src/index.ts` | Punkt wejscia Bun.serve, health check, graceful shutdown |
-| `src/server.ts` | Obsluga zdarzen Socket.io (join, register, login, message, e2ee relay, grupy, czlonkostwo, vote-kick, disconnect) |
+| `src/server.ts` | Obsluga zdarzen Socket.io (join, register, login, message, e2ee relay, grupy, czlonkostwo, vote-kick, typing, potwierdzenia, reakcje, edycja/usuwanie, profile, disconnect) |
+| `src/profile-store.ts` | Magazyn nazw wyswietlanych i statusow w pamieci, dokladany do zrzutow obecnosci i grup |
 | `src/types.ts` | Typy brandowane, mapy zdarzen, typy payloadow |
 | `src/config.ts` | Konfiguracja ze zmiennych srodowiskowych (port, CORS, logi, ping, TLS, sciezka DB) |
 | `src/account-store.ts` | Trwalosc SQLite przez `bun:sqlite`, bcrypt przez `Bun.password` |
@@ -339,6 +346,12 @@ Pelne typy leza w `backend/src/types.ts`; klient Flutter powtarza nazwy w `lib/s
 | `group:member:add`, `group:member:remove` | Zmiany czlonkostwa tylko dla adminow |
 | `group:kick:vote` | Glosowanie na wyrzucenie czlonka (wymagana wiekszosc, okno 60 s) |
 | `group:message:send` | Wiadomosc grupowa: osobny szyfr dla kazdego czlonka, dla ktorego nadawca ma klucz wspoldzielony |
+| `typing:send` | Stan wskazywania pisania dla wiadomosci prywatnej lub grupowej |
+| `receipt:read` | Oznaczenie wiadomosci peera jako przeczytanych do podanego znacznika czasu |
+| `message:react` | Dodanie lub usuniecie reakcji emoji na wiadomosci |
+| `message:edit` | Podmiana szyfru wiadomosci wyslanej przez nadawce |
+| `message:delete` | Tombstone wiadomosci wyslanej przez nadawce dla wszystkich |
+| `profile:update` | Ustawienie wlasnej nazwy wyswietlanej (max 32) i statusu (max 80) |
 
 **Serwer -> klient:**
 
@@ -351,6 +364,12 @@ Pelne typy leza w `backend/src/types.ts`; klient Flutter powtarza nazwy w `lib/s
 | `private_message` | Wiadomosc prywatna wylacznie z szyfrem |
 | `group:message` | Wiadomosc grupowa z szyframi dla poszczegolnych czlonkow |
 | `group:created`, `group:created_error`, `group:message_delivery_failed`, `group:member:removed`, `group:kick:tally` | Cykl zycia grupy, zmiany czlonkostwa, na zywo liczace sie glosy (`active` / `passed` / `expired`) |
+| `typing:changed` | Kto aktualnie pisze w rozmowie (wysylane wszystkim oprocz piszacego) |
+| `receipt:read` | Peer przeczytal wiadomosci do podanego znacznika czasu |
+| `message:reacted` | Reakcja dodana lub usunieta (emoji i nazwy uzytkownikow, do wszystkich oprocz autora) |
+| `message:edited` | Tresc wiadomosci podmieniona (nowy szyfr + flaga `edited`) |
+| `message:deleted` | Wiadomosc tombstonowana dla wszystkich |
+| `profile:updated` | Zmieniona nazwa wyswietlana lub status (rozglaszane do wszystkich aktywnych uzytkownikow) |
 | `delivery_failed`, `message_rejected`, `error` | Bledy - nie ma kolejki offline, wiadomosc do uzytkownika offline od razu konczy sie niepowodzeniem |
 | `register_success` / `register_error`, `login_success` / `login_error` | Wyniki logowania |
 | `media:token` | Token Bearer do HTTP-owych endpointow mediow |

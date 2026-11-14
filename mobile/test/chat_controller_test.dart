@@ -16,6 +16,7 @@ import 'package:scattered_keyhole/src/net/chat_events.dart';
 import 'package:scattered_keyhole/src/net/media_client.dart';
 import 'package:scattered_keyhole/src/net/socket_service.dart';
 import 'package:scattered_keyhole/src/state/chat_controller.dart';
+import 'package:scattered_keyhole/src/utils/envelope.dart';
 
 import 'ui_test_support.dart' show FakeMediaClient;
 
@@ -125,6 +126,28 @@ class FakeSocketService implements SocketService {
   @override
   void sendGroupKickVote(GroupTargetPayload payload) =>
       _record(ChatEvents.groupKickVote, payload);
+
+  @override
+  void sendTypingSend(TypingSendPayload payload) =>
+      _record(ChatEvents.typingSend, payload);
+
+  @override
+  void sendReceiptRead(ReceiptReadPayload payload) =>
+      _record(ChatEvents.receiptRead, payload);
+
+  @override
+  void sendReact(MessageReactPayload payload) => _record(ChatEvents.messageReact, payload);
+
+  @override
+  void sendEdit(MessageEditPayload payload) => _record(ChatEvents.messageEdit, payload);
+
+  @override
+  void sendDelete(MessageDeletePayload payload) =>
+      _record(ChatEvents.messageDelete, payload);
+
+  @override
+  void sendProfileUpdate(ProfileUpdatePayload payload) =>
+      _record(ChatEvents.profileUpdate, payload);
 
   // ── Inbound ────────────────────────────────────────────────────────────
 
@@ -266,6 +289,48 @@ class FakeSocketService implements SocketService {
   Unsubscribe onMediaToken(void Function(MediaTokenPayload payload) handler) {
     return _register(ChatEvents.mediaToken, (data) {
       handler(data! as MediaTokenPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onTypingChanged(void Function(TypingChangedPayload payload) handler) {
+    return _register(ChatEvents.typingChanged, (data) {
+      handler(data! as TypingChangedPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onReceiptRead(void Function(ReceiptReadRelay payload) handler) {
+    return _register(ChatEvents.receiptReadIn, (data) {
+      handler(data! as ReceiptReadRelay);
+    });
+  }
+
+  @override
+  Unsubscribe onMessageReacted(void Function(MessageReactedPayload payload) handler) {
+    return _register(ChatEvents.messageReacted, (data) {
+      handler(data! as MessageReactedPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onMessageEdited(void Function(MessageEditedPayload payload) handler) {
+    return _register(ChatEvents.messageEdited, (data) {
+      handler(data! as MessageEditedPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onMessageDeleted(void Function(MessageDeletedPayload payload) handler) {
+    return _register(ChatEvents.messageDeleted, (data) {
+      handler(data! as MessageDeletedPayload);
+    });
+  }
+
+  @override
+  Unsubscribe onProfileUpdated(void Function(ProfileUpdatedPayload payload) handler) {
+    return _register(ChatEvents.profileUpdated, (data) {
+      handler(data! as ProfileUpdatedPayload);
     });
   }
 
@@ -707,10 +772,13 @@ void main() {
       final payload =
           fake.payloadsOf(ChatEvents.messageSend).single as EncryptedMessagePayload;
       expect(payload.to, 'bob');
-      expect(
-        await bob.decrypt('alice', payload.ciphertext, payload.iv),
-        'hello bob',
-      );
+      // Spec C3: text sends are wrapped in the {t:'text', b} envelope, so the
+      // peer decrypts to the envelope and unwraps the body from it.
+      final decrypted = await bob.decrypt('alice', payload.ciphertext, payload.iv);
+      final envelope = parseEnvelope(decrypted);
+      expect(envelope.isText, isTrue);
+      expect(envelope.text, 'hello bob');
+      expect(envelope.reply, isNull);
     });
 
     test('sendMessage without a shared key fails with a friendly error', () async {
@@ -744,7 +812,7 @@ void main() {
       );
       await waitFor(() {
         final messages = controller.messagesForPeer('bob');
-        return messages.isNotEmpty && messages.first.plaintext == 'echo test';
+        return messages.isNotEmpty && messages.first.body == 'echo test';
       });
       final message = controller.messagesForPeer('bob').single;
       expect(message.isOwn, isTrue);
@@ -781,10 +849,10 @@ void main() {
       expect(controller.e2ee.hasSharedKey('alice'), isTrue);
 
       final bobCopy = payload.ciphertexts.firstWhere((entry) => entry.to == 'bob');
-      expect(
-        await bob.decrypt('alice', bobCopy.ciphertext, bobCopy.iv),
-        'hello team',
-      );
+      final decrypted =
+          parseEnvelope(await bob.decrypt('alice', bobCopy.ciphertext, bobCopy.iv));
+      expect(decrypted.isText, isTrue);
+      expect(decrypted.text, 'hello team');
 
       // The server echoes the sender's message back to us.
       fake.fire(
@@ -799,7 +867,7 @@ void main() {
       );
       await waitFor(() {
         final messages = controller.groupMessagesFor('g1');
-        return messages.isNotEmpty && messages.first.plaintext == 'hello team';
+        return messages.isNotEmpty && messages.first.body == 'hello team';
       });
       final echo = controller.groupMessagesFor('g1').single;
       expect(echo.isOwn, isTrue);

@@ -14,6 +14,12 @@ abstract final class ChatEvents {
   static const groupMemberAdd = 'group:member:add';
   static const groupMemberRemove = 'group:member:remove';
   static const groupKickVote = 'group:kick:vote';
+  static const typingSend = 'typing:send';
+  static const receiptRead = 'receipt:read';
+  static const messageReact = 'message:react';
+  static const messageEdit = 'message:edit';
+  static const messageDelete = 'message:delete';
+  static const profileUpdate = 'profile:update';
 
   // Server -> client.
   static const mediaToken = 'media:token';
@@ -34,6 +40,12 @@ abstract final class ChatEvents {
   static const groupMessage = 'group:message';
   static const groupMessageDeliveryFailed = 'group:message_delivery_failed';
   static const usersDirectory = 'users:directory';
+  static const typingChanged = 'typing:changed';
+  static const receiptReadIn = 'receipt:read';
+  static const messageReacted = 'message:reacted';
+  static const messageEdited = 'message:edited';
+  static const messageDeleted = 'message:deleted';
+  static const profileUpdated = 'profile:updated';
   static const groupMemberRemoved = 'group:member:removed';
   static const groupKickTally = 'group:kick:tally';
 

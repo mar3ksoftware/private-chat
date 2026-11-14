@@ -9,6 +9,7 @@ import { logger } from './logger';
 import { MediaAuth } from './media-auth';
 import { createMediaHttpHandler } from './media-http';
 import { MediaStore } from './media-store';
+import { ProfileStore } from './profile-store';
 import { RateLimiterRegistry } from './rate-limiter';
 import { createServer } from './server';
 import type { ClientToServerEvents, ServerToClientEvents } from './types';
@@ -38,6 +39,7 @@ const groupStore = new GroupStore();
 const kickVoteStore = new KickVoteStore();
 const mediaStore = new MediaStore();
 const mediaAuth = new MediaAuth();
+const profileStore = new ProfileStore();
 const mediaRateLimiters = new RateLimiterRegistry();
 const mediaHttp = createMediaHttpHandler(
   mediaStore,
@@ -56,6 +58,7 @@ createServer(
   userDirectory,
   kickVoteStore,
   mediaAuth,
+  profileStore,
   logger,
 );
 
@@ -96,6 +99,7 @@ function shutdown(): void {
   groupStore.destroy();
   mediaStore.destroy();
   mediaAuth.destroy();
+  profileStore.destroy();
   mediaRateLimiters.destroy();
   server.stop(true);
   process.exit(0);
