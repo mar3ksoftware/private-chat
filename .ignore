@@ -1,0 +1,6 @@
+# BEGIN local worktrees
+!.slim/
+!.slim/worktrees.json
+!.slim/worktrees/
+!.slim/worktrees/**
+# END local worktrees

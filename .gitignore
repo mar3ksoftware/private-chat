@@ -5,7 +5,12 @@ dist/
 .env.local
 *.db
 
-# AI tooling
+# local tooling
 .codegraph
 .omo/
 .playwright-mcp/
+
+# BEGIN local worktrees
+.slim/worktrees/
+.slim/worktrees.json
+# END local worktrees
